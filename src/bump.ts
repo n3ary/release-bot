@@ -148,32 +148,56 @@ export function formatSemVer(v: SemVer): string {
   return s;
 }
 
+// `26.7.11-2` is a calver value. `26.7.11` (no counter) is
+// what the bot used to produce as a "weird" semver when
+// dropping the prerelease. Both are calver-shaped and must
+// not be bumped by `nextSemVer` -- the library needs a human
+// to do the one-time cutover to a clean `MAJOR.MINOR.PATCH`.
+// This pattern matches both: `YY.M.D` (no counter) and
+// `YY.M.D-N` (with counter).
+const CALVER_LIKE_RE = /^(\d{2})\.(\d{1,2})\.(\d{1,2})(?:-(\d+))?$/;
+
 /**
  * Compute the next SemVer version. Default bump: patch (most
  * conservative, least likely to break consumers using `^X.Y.Z`).
  *
- * Rules:
- *   - If current is a prerelease (e.g. `0.3.7-rc.1`), drop the
- *     prerelease. The base version is the next "real" release.
- *   - If current is a normal version (e.g. `0.3.7`), increment
- *     patch.
- *   - Build metadata is dropped on the automated bump (we don't
- *     carry it forward; consumers that care about build metadata
- *     should not rely on a bot-bump preserving it).
- *   - If current is unparseable, start at `0.1.0` so the library
- *     has a usable starting point.
+ * Returns `null` when the current version is a calver-shaped
+ * value (e.g. `26.7.11-2` or `26.7.11`). The bot's
+ * commit.ts interprets `null` as "skip this file" and emits
+ * a log line saying the library needs a one-time manual
+ * cutover to semver. This is the safe path: the bot never
+ * produces the hybrid "calver-as-semver" version that a
+ * naive drop-prerelease would yield.
  *
- * Note: `26.7.11-2` is BOTH a valid calver AND a valid semver
- * (major=26, prerelease=2). The bot does not currently distinguish
- * "this was bumped by the calver bot before" vs "this is intentional
- * semver". The first semver bump on a previously-calver'd package
- * will drop the prerelease (e.g. `26.7.11-2` -> `26.7.11`, then
- * `26.7.11` -> `26.7.12` on the next bump). That is technically
- * valid semver but a weird MAJOR. If a library is currently on a
- * calver tag, do a one-time manual correction to a proper
- * `MAJOR.MINOR.PATCH` before the next release.
+ * Rules:
+ *   - If current is calver-shaped (`26.7.11` or `26.7.11-2`),
+ *     return `null` (skip + manual cutover required).
+ *   - If current is unparseable as semver, start at `0.1.0`.
+ *   - If current is a prerelease (e.g. `0.3.7-rc.1`), drop
+ *     the prerelease. The base version is the next "real"
+ *     release.
+ *   - If current is a normal version (e.g. `0.3.7`),
+ *     increment patch.
+ *   - Build metadata is dropped on the automated bump (we
+ *     don't carry it forward; consumers that care about build
+ *     metadata should not rely on a bot-bump preserving it).
  */
-export function nextSemVer(current: string): string {
+export function nextSemVer(current: string): string | null {
+  // If current is a calver-shaped value, the bot must not
+  // touch it. The library was previously on calver; the
+  // cutover to semver requires a human to set a clean
+  // MAJOR.MINOR.PATCH. Returning null signals commit.ts to
+  // skip this file with a clear log line.
+  if (parseCalVer(current) !== null) {
+    return null;
+  }
+  // Also catch the no-counter intermediate (`26.7.11`) that
+  // a previous bot version produced by dropping the
+  // prerelease. Same shape, same fix: skip and require a
+  // manual cutover.
+  if (CALVER_LIKE_RE.test(current)) {
+    return null;
+  }
   const parsed = parseSemVer(current);
   if (!parsed) return "0.1.0";
   if (parsed.prerelease) {

@@ -280,9 +280,12 @@ export async function discoverAndOpenPR(
 
   // 6. Compute the next version for each file. The scheme is
   //    picked per-file: private packages (apps) get CalVer,
-  //    non-private packages (libraries) get semver. All files
-  //    share the same "now" so any calver bumps within the same
-  //    release are consistent on the same day-counter.
+  //    non-private packages (libraries) get semver. Libraries
+  //    on a calver-shaped version (e.g. `26.7.11-2`) are
+  //    skipped with a clear log line so a human can do the
+  //    one-time cutover to a clean `MAJOR.MINOR.PATCH` -- the
+  //    bot never produces the hybrid "calver-as-semver" value
+  //    that a naive drop-prerelease would yield.
   const now = DateTime.utc();
   const bumped: PackageJsonFile[] = [];
   for (const { path, currentVersion, file } of toBump) {
@@ -290,6 +293,22 @@ export async function discoverAndOpenPR(
     const next = scheme === "calver"
       ? nextCalVer(currentVersion, now, env.TIMEZONE)
       : nextSemVer(currentVersion);
+
+    // nextSemVer returns null when the current version is a
+    // calver-shaped value (a library that was previously on
+    // the calver scheme). Skip the file with a clear log line;
+    // the commit message + PR body will list the skipped path
+    // so the human reviewer can do the one-time cutover.
+    if (next === null) {
+      log(
+        `Skipping ${path}: current version ${currentVersion} is ` +
+          `calver-shaped; manual cutover to semver required before ` +
+          `the next release`,
+      );
+      skipped.push(path);
+      continue;
+    }
+
     log(`Bumping ${path}: ${currentVersion} -> ${next} (${scheme})`);
 
     const parsed = JSON.parse(file.content) as Record<string, unknown>;
