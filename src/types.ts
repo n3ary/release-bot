@@ -12,6 +12,11 @@ export interface Env {
   // Vars (set in wrangler.toml)
   TIMEZONE: string;
   LOG_LEVEL: "debug" | "info" | "warn" | "error";
+  // BOT_VERSION is injected by the deploy workflow
+  // (.github/workflows/deploy.yml) from package.json. Visible in
+  // the Workers dashboard and in every log line so a webhook
+  // delivery can be correlated with a specific release.
+  BOT_VERSION: string;
 
   // Optional: for the manual /test/bump endpoint. If unset, the endpoint
   // returns 403. Set via `wrangler secret put ADMIN_TOKEN`.

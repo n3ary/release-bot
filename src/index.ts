@@ -25,10 +25,10 @@ export default {
     const log = makeLogger(env);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return new Response("ok", {
-        status: 200,
-        headers: { "Content-Type": "text/plain" },
-      });
+      return new Response(
+        JSON.stringify({ status: "ok", version: env.BOT_VERSION ?? "unknown" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
     }
 
     if (request.method === "POST" && url.pathname === "/webhook") {
@@ -83,7 +83,10 @@ async function handleWebhook(
   };
   const defaultBranch = event.repository.default_branch;
 
-  log(`Processing merge: ${owner}/${repo}@${mergeSha} (branch: ${defaultBranch})`);
+  log(
+    `n3ary-release-bot ${env.BOT_VERSION ?? "?"}: ` +
+    `Processing merge: ${owner}/${repo}@${mergeSha} (branch: ${defaultBranch})`,
+  );
 
   // 2a. Self-bump guard: skip the bot's own repo. The bot's
   //     version is semver, not CalVer; auto-bumping it would
