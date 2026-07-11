@@ -15,7 +15,12 @@
 //     that didn't already touch the version).
 
 import { describe, expect, it } from "vitest";
-import { isPackageTouched, shouldBumpPackage } from "../src/commit.ts";
+import {
+  bumpSchemeFor,
+  isPackageTouched,
+  isPrivatePackage,
+  shouldBumpPackage,
+} from "../src/commit.ts";
 
 describe("isPackageTouched", () => {
   describe("sub-packages", () => {
@@ -204,5 +209,50 @@ describe("end-to-end monorepo scenario", () => {
     expect(
       bumpedBy(["package.json", "pnpm-workspace.yaml"]),
     ).toEqual(["package.json"]);
+  });
+});
+
+// Test the "private vs library" scheme picker.
+//
+// Apps (private: true) get CalVer bumps; libraries (private
+// missing or false) get semver bumps. This is the signal the bot
+// uses to pick the right arithmetic for the package.
+
+describe("isPrivatePackage", () => {
+  it("returns true when private is true", () => {
+    expect(isPrivatePackage('{"name": "x", "private": true}')).toBe(true);
+  });
+
+  it("returns false when private is false", () => {
+    expect(isPrivatePackage('{"name": "x", "private": false}')).toBe(false);
+  });
+
+  it("returns false when private is missing (npm default: publishable)", () => {
+    expect(isPrivatePackage('{"name": "@scope/x", "version": "0.3.7"}'))
+      .toBe(false);
+  });
+
+  it("returns false for an unparseable string (library is safer default)", () => {
+    expect(isPrivatePackage("not-json")).toBe(false);
+    expect(isPrivatePackage("")).toBe(false);
+  });
+
+  it("only treats boolean true as private (string true is not)", () => {
+    // The field is JSON-parsed; a string "true" is not boolean true.
+    // This matches the npm behaviour where only boolean true matters.
+    expect(isPrivatePackage('{"private": "true"}')).toBe(false);
+  });
+});
+
+describe("bumpSchemeFor", () => {
+  it("returns calver for private packages", () => {
+    expect(bumpSchemeFor('{"private": true, "name": "x"}')).toBe("calver");
+  });
+
+  it("returns semver for libraries", () => {
+    expect(bumpSchemeFor('{"name": "@scope/x", "version": "0.3.7"}'))
+      .toBe("semver");
+    expect(bumpSchemeFor('{"private": false, "name": "x"}'))
+      .toBe("semver");
   });
 });

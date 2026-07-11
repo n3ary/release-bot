@@ -91,3 +91,105 @@ function makeKey(year: number, month: number, day: number): string {
 function pad2(n: number): string {
   return n.toString().padStart(2, "0");
 }
+
+// ---------------------------------------------------------------------------
+// SemVer arithmetic for library packages.
+//
+// Format: MAJOR.MINOR.PATCH[-PRERELEASE][+BUILDMETA] per semver.org.
+// The bot uses the standard "next patch" rule: increment PATCH for
+// a normal release, drop a prerelease if one is present. Major and
+// minor bumps are explicit decisions and never automated.
+//
+// Libraries are identified by `package.json#private !== true` in
+// commit.ts; see isPrivatePackage. Apps stay on CalVer above.
+// ---------------------------------------------------------------------------
+
+export interface SemVer {
+  major: number;
+  minor: number;
+  patch: number;
+  prerelease: string | null; // null = no prerelease
+  build: string | null;      // null = no build metadata
+}
+
+// Loose semver regex: numeric MAJOR.MINOR.PATCH, optional `-prerelease`
+// (alphanumeric + dot + hyphen, no leading dot/hyphen), optional
+// `+build` (same charset).
+const SEMVER_RE =
+  /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/;
+
+/**
+ * Parse a SemVer string into its components, or return null if the
+ * string is not a valid SemVer. Used to detect "this is a calver
+ * version we're transitioning from" (parsed by parseCalVer but
+ * returns here as a real SemVer with an unusual MAJOR) vs "this is
+ * a normal semver" (parsed cleanly with a small MAJOR).
+ */
+export function parseSemVer(s: string): SemVer | null {
+  const m = s.match(SEMVER_RE);
+  if (!m) return null;
+  return {
+    major: parseInt(m[1], 10),
+    minor: parseInt(m[2], 10),
+    patch: parseInt(m[3], 10),
+    prerelease: m[4] ?? null,
+    build: m[5] ?? null,
+  };
+}
+
+/**
+ * Format a SemVer value as the canonical string. Drops a null
+ * prerelease/build; preserves non-null values verbatim.
+ */
+export function formatSemVer(v: SemVer): string {
+  let s = `${v.major}.${v.minor}.${v.patch}`;
+  if (v.prerelease) s += `-${v.prerelease}`;
+  if (v.build) s += `+${v.build}`;
+  return s;
+}
+
+/**
+ * Compute the next SemVer version. Default bump: patch (most
+ * conservative, least likely to break consumers using `^X.Y.Z`).
+ *
+ * Rules:
+ *   - If current is a prerelease (e.g. `0.3.7-rc.1`), drop the
+ *     prerelease. The base version is the next "real" release.
+ *   - If current is a normal version (e.g. `0.3.7`), increment
+ *     patch.
+ *   - Build metadata is dropped on the automated bump (we don't
+ *     carry it forward; consumers that care about build metadata
+ *     should not rely on a bot-bump preserving it).
+ *   - If current is unparseable, start at `0.1.0` so the library
+ *     has a usable starting point.
+ *
+ * Note: `26.7.11-2` is BOTH a valid calver AND a valid semver
+ * (major=26, prerelease=2). The bot does not currently distinguish
+ * "this was bumped by the calver bot before" vs "this is intentional
+ * semver". The first semver bump on a previously-calver'd package
+ * will drop the prerelease (e.g. `26.7.11-2` -> `26.7.11`, then
+ * `26.7.11` -> `26.7.12` on the next bump). That is technically
+ * valid semver but a weird MAJOR. If a library is currently on a
+ * calver tag, do a one-time manual correction to a proper
+ * `MAJOR.MINOR.PATCH` before the next release.
+ */
+export function nextSemVer(current: string): string {
+  const parsed = parseSemVer(current);
+  if (!parsed) return "0.1.0";
+  if (parsed.prerelease) {
+    return formatSemVer({
+      major: parsed.major,
+      minor: parsed.minor,
+      patch: parsed.patch,
+      prerelease: null,
+      build: null,
+    });
+  }
+  return formatSemVer({
+    major: parsed.major,
+    minor: parsed.minor,
+    patch: parsed.patch + 1,
+    prerelease: null,
+    build: null,
+  });
+}
