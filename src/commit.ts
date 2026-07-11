@@ -9,10 +9,17 @@
 // checks pass (usually within seconds; with 0 required reviews,
 // no human click is needed).
 //
-// The "skip-if-already-touched" rule still applies: if the merge
-// commit's version differs from the parent's, the dev manually
-// edited the version and the bot no-ops on that file. Per-file,
-// not per-PR.
+// Two skip rules apply, per file:
+//   1. "no library changes" - the merge did not touch any file in
+//      the package's directory (including the package.json itself).
+//      A workflow-only or docs-only PR bumps nothing.
+//   2. "skip-if-already-touched" - the merge commit's version
+//      differs from the parent's, meaning the dev manually edited
+//      the version. The bot no-ops on that file; the dev's edit
+//      wins.
+//
+// Both skip reasons are reported in the log and the PR body, so
+// the reason for a no-op is always visible.
 
 import { Octokit } from "octokit";
 import { DateTime } from "luxon";
@@ -30,6 +37,70 @@ export interface ReleaseResult {
   bumped: PackageJsonFile[];
   skipped: string[];
   pr: PullRequestResult | null;
+}
+
+/**
+ * Determine whether a given package.json file is "touched" by a set
+ * of changed files in the merge commit.
+ *
+ * A package is touched if any changed file is in or under the
+ * package's directory. For the root `package.json` (no directory
+ * prefix), the only change that touches it is a modification of the
+ * root `package.json` itself - this prevents the root from being
+ * bumped on every workflow / docs / config change that lives at the
+ * repo root.
+ *
+ * Examples (for the gtfs-publisher monorepo):
+ *   - "apps/gtfs-rt/src/foo.ts"   -> touches "apps/gtfs-rt/package.json"
+ *   - "apps/gtfs-rt/package.json" -> touches "apps/gtfs-rt/package.json"
+ *   - "libs/spec/package.json"    -> touches "libs/spec/package.json"
+ *   - ".github/workflows/x.yml"   -> touches nothing
+ *   - "package.json" (modified)   -> touches the root "package.json"
+ *   - "README.md"                 -> touches nothing
+ *
+ * Exported for unit testing.
+ */
+export function isPackageTouched(
+  packageJsonPath: string,
+  changedFiles: readonly string[],
+): boolean {
+  if (packageJsonPath === "package.json") {
+    return changedFiles.includes("package.json");
+  }
+  const dir = packageJsonPath.replace(/\/package\.json$/, "");
+  return changedFiles.some(
+    (f) => f === dir || f.startsWith(dir + "/"),
+  );
+}
+
+/**
+ * Fetch the list of files changed between two commits via the
+ * GitHub compare API. Returns paths (forward-slash, repo-relative).
+ *
+ * Empty on API error (caller treats as "no changes", so the bot
+ * no-ops). A hard error would block releases for monorepos with
+ * huge diffs; better to skip than to fail.
+ */
+async function getChangedFiles(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+): Promise<string[]> {
+  try {
+    const { data } = await octokit.rest.repos.compareCommits({
+      owner,
+      repo,
+      base,
+      head,
+    });
+    return (data.files ?? [])
+      .map((f) => f.filename)
+      .filter((f): f is string => typeof f === "string");
+  } catch {
+    return [];
+  }
 }
 
 export async function discoverAndOpenPR(
@@ -87,16 +158,38 @@ export async function discoverAndOpenPR(
   }
   log(`Found ${packagePaths.length} package.json files`);
 
-  // 4. For each, read the version at HEAD and HEAD~1. Skip if the
-  //    merge commit already touched the version (dev's manual edit).
+  // 4. Fetch the list of files changed in the merge commit. Used
+  //    to filter down to "touched" packages only - a workflow-only
+  //    PR should not bump library versions.
+  const changedFiles = await getChangedFiles(
+    octokit,
+    owner,
+    repo,
+    parentSha,
+    mergeSha,
+  );
+  log(`Merge commit changed ${changedFiles.length} files`);
+
+  // 5. For each package.json, check both skip rules:
+  //    a. "no library changes" - no changed file is under the
+  //       package's directory. A docs-only / workflow-only PR
+  //       should not bump anything.
+  //    b. "skip-if-already-touched" - the merge commit already
+  //       changed the version (dev's manual edit). Bot no-ops.
   const skipped: string[] = [];
   const toBump: { path: string; currentVersion: string; file: PackageJsonFile }[] = [];
 
   for (const path of packagePaths) {
+    if (!isPackageTouched(path, changedFiles)) {
+      log(`Skipping ${path}: no files changed in this package`);
+      skipped.push(path);
+      continue;
+    }
     const headFile = await readPackageJsonAt(octokit, owner, repo, path, mergeSha);
     const parentFile = await readPackageJsonAt(octokit, owner, repo, path, parentSha);
     if (!headFile || !parentFile) {
       log(`Skipping ${path}: could not read at HEAD or HEAD~1`);
+      skipped.push(path);
       continue;
     }
     if (headFile.version !== parentFile.version) {
@@ -111,11 +204,11 @@ export async function discoverAndOpenPR(
   }
 
   if (toBump.length === 0) {
-    log("No files to bump");
+    log("No files to bump (all skipped)");
     return { bumped: [], skipped, pr: null };
   }
 
-  // 5. Compute the next CalVer for each file. All files share the
+  // 6. Compute the next CalVer for each file. All files share the
   //    same "now" so they're consistent on the same release.
   const now = DateTime.utc();
   const bumped: PackageJsonFile[] = [];
@@ -128,7 +221,7 @@ export async function discoverAndOpenPR(
     bumped.push({ path, content: newContent, version: next });
   }
 
-  // 6. Create the branch. Branch name encodes the next version so
+  // 7. Create the branch. Branch name encodes the next version so
   //    it's obvious in the PR list. If the branch already exists
   //    (from a previous failed attempt), use the existing one.
   const primaryVersion = bumped[0].version;
@@ -144,7 +237,7 @@ export async function discoverAndOpenPR(
     `Branch ${branchName}: ${branchResult === "created" ? "created" : "already exists, using it"}`,
   );
 
-  // 7. Create the commit with all bumped files. Uses the Git Data
+  // 8. Create the commit with all bumped files. Uses the Git Data
   //    API: create blobs for the new content, build a tree based
   //    on the merge commit's tree, create a commit on the new
   //    branch, update the ref.
@@ -192,7 +285,7 @@ export async function discoverAndOpenPR(
     parents: [mergeSha], // The branch points at mergeSha; this commit's parent is mergeSha.
   });
 
-  // 8. Update the new branch's ref to point at the new commit.
+  // 9. Update the new branch's ref to point at the new commit.
   await octokit.rest.git.updateRef({
     owner,
     repo,
@@ -202,7 +295,7 @@ export async function discoverAndOpenPR(
   });
   log(`Committed ${newCommit.sha} to ${branchName}`);
 
-  // 9. Open the PR.
+  // 10. Open the PR.
   const prTitle = bumped.length === 1
     ? `chore(release): ${bumped[0].version}`
     : `chore(release): ${bumped.map((f) => f.version).join(", ")}`;
@@ -220,7 +313,7 @@ export async function discoverAndOpenPR(
   );
   log(`Opened PR #${pr.number}: ${pr.html_url}`);
 
-  // 10. Enable auto-merge. The PR merges automatically when the
+  // 11. Enable auto-merge. The PR merges automatically when the
   //     required status checks pass. With 0 required reviews, this
   //     is usually within seconds.
   try {
@@ -262,7 +355,7 @@ function renderPrBody(
   }
   if (skipped.length > 0) {
     lines.push("");
-    lines.push("Skipped (merge commit already changed the version, dev's edit wins):");
+    lines.push("Skipped:");
     for (const path of skipped) {
       lines.push(`- \`${path}\``);
     }
