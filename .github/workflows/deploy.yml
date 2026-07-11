@@ -62,13 +62,13 @@ jobs:
           node-version: 24
 
       - name: Install
-        # Approve build scripts for packages with native deps.
-        # The [pnpm] onlyBuiltDependencies in .npmrc is not read
-        # reliably by pnpm/action-setup@v4 in CI; this explicit
-        # approve-builds call is the reliable fallback.
-        run: |
-          pnpm approve-builds esbuild sharp workerd
-          pnpm install --frozen-lockfile
+        # pnpm-workspace.yaml's `allowBuilds:` list covers
+        # esbuild/sharp/workerd (the wrangler native-build deps).
+        # PR #11 used an explicit `pnpm approve-builds ...` call as
+        # a fallback, but that just printed "no packages awaiting
+        # approval" and the install still failed -- the actual fix
+        # is the workspace config, not the CLI dance.
+        run: pnpm install --frozen-lockfile
 
       - name: Resolve BOT_VERSION
         id: version
