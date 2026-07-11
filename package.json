@@ -1,6 +1,6 @@
 {
   "name": "n3ary-release-bot",
-  "version": "0.1.0",
+  "version": "26.7.11-1",
   "private": true,
   "description": "Org-level GitHub App + Cloudflare Worker. Bumps package.json#version on main after every merged PR using CalVer (YY.M.D-N) in Europe/Bucharest timezone. Installed on the n3ary org.",
   "type": "module",
