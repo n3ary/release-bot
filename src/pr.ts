@@ -18,6 +18,11 @@ export interface PullRequestResult {
 /**
  * Create a new branch at the given SHA. The branch is the base
  * for the version-bump commit.
+ *
+ * Idempotent: if the branch already exists (e.g. from a previous
+ * failed attempt), returns "exists" instead of erroring. The
+ * caller can continue with the commit step; the existing branch's
+ * tip should be the same merge SHA from the previous attempt.
  */
 export async function createBranch(
   octokit: Octokit,
@@ -25,13 +30,26 @@ export async function createBranch(
   repo: string,
   branchName: string,
   fromSha: string,
-): Promise<void> {
-  await octokit.rest.git.createRef({
-    owner,
-    repo,
-    ref: `refs/heads/${branchName}`,
-    sha: fromSha,
-  });
+): Promise<"created" | "exists"> {
+  try {
+    await octokit.rest.git.createRef({
+      owner,
+      repo,
+      ref: `refs/heads/${branchName}`,
+      sha: fromSha,
+    });
+    return "created";
+  } catch (err) {
+    if (
+      err && typeof err === "object" && "status" in err &&
+      (err as { status: number }).status === 422
+    ) {
+      // "Reference already exists" -- a previous attempt created
+      // the branch. We'll commit to the existing ref.
+      return "exists";
+    }
+    throw err;
+  }
 }
 
 /**
