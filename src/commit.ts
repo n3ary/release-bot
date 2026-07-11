@@ -129,11 +129,20 @@ export async function discoverAndOpenPR(
   }
 
   // 6. Create the branch. Branch name encodes the next version so
-  //    it's obvious in the PR list.
+  //    it's obvious in the PR list. If the branch already exists
+  //    (from a previous failed attempt), use the existing one.
   const primaryVersion = bumped[0].version;
   const branchName = `release/calver-${primaryVersion}`;
-  log(`Creating branch ${branchName} at ${mergeSha}`);
-  await createBranch(octokit, owner, repo, branchName, mergeSha);
+  const branchResult = await createBranch(
+    octokit,
+    owner,
+    repo,
+    branchName,
+    mergeSha,
+  );
+  log(
+    `Branch ${branchName}: ${branchResult === "created" ? "created" : "already exists, using it"}`,
+  );
 
   // 7. Create the commit with all bumped files. Uses the Git Data
   //    API: create blobs for the new content, build a tree, create
