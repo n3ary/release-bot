@@ -136,14 +136,17 @@ export async function discoverAndOpenPR(
   await createBranch(octokit, owner, repo, branchName, mergeSha);
 
   // 7. Create the commit with all bumped files. Uses the Git Data
-  //    API: create blobs for the new content, build a tree, create
-  //    a commit on the new branch, update the ref.
-  const { data: baseTree } = await octokit.rest.git.getTree({
-    owner,
-    repo,
-    tree_sha: mergeCommit.tree.sha,
-  });
-
+  //    API: create blobs for the new content, build a tree based
+  //    on the merge commit's tree, create a commit on the new
+  //    branch, update the ref.
+  //
+  //    Note: when `base_tree` is set, GitHub preserves the base
+  //    tree's entries. We only need to pass the entries that
+  //    change (the bumped package.json blobs). Earlier code tried
+  //    to pass the entire filtered base tree back, but the
+  //    recursive tree returns mixed `blob` and `tree` entries and
+  //    hard-coding `type: "tree"` for all of them caused GitHub
+  //    to reject blob shas as "not a valid tree".
   const updatedBlobs = await Promise.all(
     bumped.map(async (file) => {
       const { data: blob } = await octokit.rest.git.createBlob({
@@ -161,24 +164,11 @@ export async function discoverAndOpenPR(
     }),
   );
 
-  const basePathsToReplace = new Set(bumped.map((f) => f.path));
-  const filteredBase = baseTree.tree.filter(
-    (entry) => entry.path !== undefined && !basePathsToReplace.has(entry.path),
-  );
-
   const { data: newTree } = await octokit.rest.git.createTree({
     owner,
     repo,
     base_tree: mergeCommit.tree.sha,
-    tree: [
-      ...filteredBase.map((entry) => ({
-        path: entry.path as string,
-        mode: (entry.mode ?? "100644") as "100644",
-        type: "tree" as const,
-        sha: entry.sha as string,
-      })),
-      ...updatedBlobs,
-    ],
+    tree: updatedBlobs,
   });
 
   const commitMessage = bumped.length === 1
