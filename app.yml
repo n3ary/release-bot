@@ -20,12 +20,16 @@ hook_attributes:
   url: https://n3ary-release-bot.REPLACE_ME.workers.dev/webhook
   active: true
 
-# Events the bot subscribes to. pull_request is what we actually use;
-# push is included for completeness (in case we ever want to react to
-# direct pushes to main, e.g. for the org-level bypass scenario).
+# Events the bot subscribes to. Only pull_request: the bot acts on
+# merged PRs and opens a version-bump PR. We deliberately do NOT
+# subscribe to push events: the bot's own version-bump PR auto-merge
+# produces a push event on main, and we don't want the bot to
+# re-trigger on that. The bot's webhook handler also explicitly
+# rejects non-pull_request events, so the push event would be
+# ignored even if subscribed -- but skipping the subscription
+# saves a wasted round-trip.
 events:
   - pull_request
-  - push
 
 # Permissions the bot needs. The bot is a PR-based contributor:
 # it creates branches, commits the version bump, opens a PR, and
