@@ -62,10 +62,13 @@ jobs:
           node-version: 24
 
       - name: Install
-        # Skip the build script approval prompt (pnpm 11) by
-        # whitelisting the packages this repo actually builds. The
-        # wrangler action would otherwise hang on the first install.
-        run: pnpm install --frozen-lockfile
+        # Approve build scripts for packages with native deps.
+        # The [pnpm] onlyBuiltDependencies in .npmrc is not read
+        # reliably by pnpm/action-setup@v4 in CI; this explicit
+        # approve-builds call is the reliable fallback.
+        run: |
+          pnpm approve-builds esbuild sharp workerd
+          pnpm install --frozen-lockfile
 
       - name: Resolve BOT_VERSION
         id: version
@@ -96,7 +99,7 @@ jobs:
           grep BOT_VERSION wrangler.toml
 
       - name: Deploy to Cloudflare
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
