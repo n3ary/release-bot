@@ -1,0 +1,13 @@
+# Build artifacts
+node_modules/
+dist/
+.wrangler/
+.dev.vars*
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+*.swp

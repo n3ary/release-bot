@@ -1,0 +1,43 @@
+# GitHub App manifest for the n3ary-release-bot
+#
+# This file is the GitHub App manifest. To register the app:
+#   1. Go to https://github.com/organizations/n3ary/settings/apps/new
+#   2. Paste the contents of this file as the manifest
+#   3. Confirm the name, webhook URL (your Worker URL + /webhook), and events
+#   4. GitHub creates the app and gives you an App ID + private key
+#
+# After registration, the App ID and private key are configured as
+# Cloudflare Worker secrets (see README.md step 2).
+
+name: n3ary-release-bot
+description: Org-level release bot for the n3ary GitHub org. Bumps package.json#version on main after every merged PR using CalVer (YY.M.D-N) in Europe/Bucharest timezone.
+
+url: https://github.com/n3ary/release-bot
+
+# Webhook URL is the Cloudflare Worker URL with /webhook appended.
+# Set this to your actual Worker URL after the first `wrangler deploy`.
+hook_attributes:
+  url: https://n3ary-release-bot.REPLACE_ME.workers.dev/webhook
+  active: true
+
+# Events the bot subscribes to. pull_request is what we actually use;
+# push is included for completeness (in case we ever want to react to
+# direct pushes to main, e.g. for the org-level bypass scenario).
+events:
+  - pull_request
+  - push
+
+# Permissions the bot needs. The bot never reads issues, never edits
+# PRs, never touches Actions -- just the git tree, and the GitHub App
+# installation metadata. `metadata: read` is required for any app.
+permissions:
+  contents: write       # push the chore(release) commit
+  metadata: read        # always required
+
+# Default events receive the full payload. We only need the PR event
+# so we don't need to subscribe to anything else.
+default_events:
+  - pull_request
+
+# The bot does not need to act on behalf of a user.
+public: false

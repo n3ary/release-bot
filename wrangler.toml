@@ -1,0 +1,17 @@
+name = "n3ary-release-bot"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Production vars (non-secret). Secrets are set via:
+#   wrangler secret put GITHUB_APP_ID
+#   wrangler secret put GITHUB_APP_PRIVATE_KEY
+#   wrangler secret put GITHUB_WEBHOOK_SECRET
+[vars]
+TIMEZONE = "Europe/Bucharest"
+LOG_LEVEL = "info"
+
+# Cloudflare Workers free tier is 100k requests/day. n3ary has ~10 PRs/day
+# at most; well under the cap. Bump to paid plan only if traffic grows.
+[observability]
+enabled = true

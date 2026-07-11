@@ -1,0 +1,29 @@
+{
+  "name": "n3ary-release-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Org-level GitHub App + Cloudflare Worker. Bumps package.json#version on main after every merged PR using CalVer (YY.M.D-N) in Europe/Bucharest timezone. Installed on the n3ary org.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "luxon": "^3.5.0",
+    "octokit": "^4.0.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240725.0",
+    "@types/luxon": "^3.4.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5",
+    "wrangler": "^3.84.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
