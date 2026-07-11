@@ -1,0 +1,15 @@
+# pnpm 11 configuration. In v11, all pnpm-specific settings live
+# here, NOT in .npmrc (which is now auth/registry only).
+#
+# allowBuilds: packages allowed to run build scripts during install.
+# In pnpm 11, build scripts are blocked by default unless listed here.
+# Listed deps come from wrangler (esbuild + sharp + workerd) and need
+# their native binaries built at install time. Without this list,
+# pnpm install fails with ERR_PNPM_IGNORED_BUILDS.
+#
+# Re-evaluate if any of these packages get compromised upstream --
+# these scripts run on the deploy runner, not in the published bundle.
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true
