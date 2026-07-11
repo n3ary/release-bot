@@ -27,11 +27,14 @@ events:
   - pull_request
   - push
 
-# Permissions the bot needs. The bot never reads issues, never edits
-# PRs, never touches Actions -- just the git tree, and the GitHub App
-# installation metadata. `metadata: read` is required for any app.
+# Permissions the bot needs. The bot is a PR-based contributor:
+# it creates branches, commits the version bump, opens a PR, and
+# enables auto-merge. All of that requires `contents: write` (for
+# the commit) and `pull_requests: write` (for opening the PR and
+# enabling auto-merge). `metadata: read` is required for any app.
 permissions:
-  contents: write       # push the chore(release) commit
+  contents: write       # create the version-bump commit on the bot's branch
+  pull_requests: write  # open the PR and enable auto-merge
   metadata: read        # always required
 
 # Default events receive the full payload. We only need the PR event
