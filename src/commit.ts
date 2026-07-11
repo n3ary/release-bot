@@ -30,7 +30,7 @@
 
 import { Octokit } from "octokit";
 import { DateTime } from "luxon";
-import { nextCalVer } from "./bump.ts";
+import { nextCalVer, nextSemVer } from "./bump.ts";
 import {
   createBranch,
   enableAutoMerge,
@@ -104,6 +104,43 @@ export function shouldBumpPackage(
 ): boolean {
   if (packageJsonPath === "package.json") return true;
   return isPackageTouched(packageJsonPath, changedFiles);
+}
+
+/**
+ * Determine whether a package.json is "private" (an app, deployed
+ * but not published to a registry) or a "library" (published to a
+ * registry and consumed by other packages). Per the bot's
+ * contract, private packages use CalVer (YY.M.D-N) and library
+ * packages use semver (MAJOR.MINOR.PATCH).
+ *
+ * The check is just on the parsed `private` field. Defaults to
+ * `false` (library) when the field is missing, which matches npm's
+ * default behaviour: a package.json without `private: true` is
+ * publishable.
+ *
+ * On a JSON parse error, also default to `false` (library). The
+ * caller's existing skip rules will no-op on unparseable package
+ * metadata anyway; "library" is the safer default because it
+ * keeps semver's stricter ordering (vs. calver's monotonic-day
+ * counter) which is more conservative for downstream consumers.
+ */
+export function isPrivatePackage(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as { private?: unknown };
+    return parsed.private === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Which bump scheme applies to a given package? Returns
+ * `"calver"` for apps (private: true) and `"semver"` for
+ * libraries (the default). Used to pick between nextCalVer and
+ * nextSemVer in the bump loop.
+ */
+export function bumpSchemeFor(content: string): "calver" | "semver" {
+  return isPrivatePackage(content) ? "calver" : "semver";
 }
 
 /**
@@ -241,13 +278,20 @@ export async function discoverAndOpenPR(
     return { bumped: [], skipped, pr: null };
   }
 
-  // 6. Compute the next CalVer for each file. All files share the
-  //    same "now" so they're consistent on the same release.
+  // 6. Compute the next version for each file. The scheme is
+  //    picked per-file: private packages (apps) get CalVer,
+  //    non-private packages (libraries) get semver. All files
+  //    share the same "now" so any calver bumps within the same
+  //    release are consistent on the same day-counter.
   const now = DateTime.utc();
   const bumped: PackageJsonFile[] = [];
   for (const { path, currentVersion, file } of toBump) {
-    const next = nextCalVer(currentVersion, now, env.TIMEZONE);
-    log(`Bumping ${path}: ${currentVersion} -> ${next}`);
+    const scheme = bumpSchemeFor(file.content);
+    const next = scheme === "calver"
+      ? nextCalVer(currentVersion, now, env.TIMEZONE)
+      : nextSemVer(currentVersion);
+    log(`Bumping ${path}: ${currentVersion} -> ${next} (${scheme})`);
+
     const parsed = JSON.parse(file.content) as Record<string, unknown>;
     parsed.version = next;
     const newContent = JSON.stringify(parsed, null, 2) + "\n";
