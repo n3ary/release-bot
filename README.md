@@ -130,7 +130,7 @@ Then just merge to main. The workflow:
 **Option B: manual, from a local checkout.**
 
 ```bash
-pnpm install   # installs deps; first run will prompt to approve build scripts (esbuild, sharp, workerd)
+pnpm install   # installs deps; pnpm-workspace.yaml's `allowBuilds:` runs sharp + workerd build scripts
 pnpm deploy    # wrangler builds and uploads the Worker
 ```
 
@@ -150,9 +150,11 @@ In the GitHub App settings (Settings → Developer settings → GitHub Apps → 
 
 In the GitHub App settings, click "Install App" and select the n3ary org. Grant access to "All repositories" (or a specific subset if you want to limit the bot to certain repos).
 
-### 6. Re-accept the new permissions (only if upgrading from v0.1.0)
+### 6. Re-accept the new permissions (only if upgrading from a pre-PR-based version)
 
-If you already had the bot installed before the `pull_requests: write` permission was added, GitHub will show a "new permissions requested" banner in the app's settings. Click through and accept. Without this, the bot can create the branch and commit, but cannot open the PR or enable auto-merge.
+If you previously installed the bot on the direct-push flow (v0.1.0, when the bot pushed `chore(release)` commits directly to `main`), GitHub will show a "new permissions requested" banner when the new manifest adds `pull_requests: write`. Click through and accept. Without this, the bot can create the branch and commit, but cannot open the PR or enable auto-merge.
+
+If this is a fresh install, there is no banner — the manifest is what GitHub sees on first install.
 
 ## Branch protection
 
@@ -169,19 +171,10 @@ If you bump reviews to 1 in the future, the version-bump PR will wait for that r
 ## Development
 
 ```bash
-# Install deps
+# Install deps. pnpm-workspace.yaml's `allowBuilds:` list covers
+# esbuild + sharp + workerd (the wrangler native-build deps), so the
+# install runs their build scripts without prompting.
 pnpm install
-
-# If pnpm 11 prompts about build scripts (esbuild, sharp, workerd), run:
-#   pnpm approve-builds
-# (one-time per machine; the .npmrc lists the allowed packages, but
-# pnpm 11 requires explicit confirmation on first install)
-#
-# If you want to skip the approval entirely, install with --ignore-scripts:
-#   pnpm install --ignore-scripts
-# (the build scripts install prebuilt binaries that are already in the
-# packages; --ignore-scripts skips the post-install step and is safe for
-# Cloudflare Worker projects because wrangler uses the prebuilt binaries)
 
 # Run the CalVer unit tests
 pnpm test
@@ -201,7 +194,7 @@ The Worker is stateless. There is no local database. Tests cover the CalVer logi
 
 ## Package manager
 
-The bot uses **pnpm** (consistent with the rest of the n3ary org). The `packageManager` field in `package.json` pins the exact pnpm version; Corepack (built into Node 20+) reads this and uses the right version automatically. The `.npmrc` file (in `[pnpm]` section) whitelists the three native deps that wrangler needs (`esbuild`, `sharp`, `workerd`); pnpm 11 still requires a one-time `pnpm approve-builds` confirmation on first install, after which subsequent installs are silent. The `pnpm-lock.yaml` is committed for reproducible builds.
+The bot uses **pnpm** (consistent with the rest of the n3ary org). The `packageManager` field in `package.json` pins the exact pnpm version; Corepack (built into Node 20+) reads this and uses the right version automatically. Build-script approval lives in [`pnpm-workspace.yaml`](pnpm-workspace.yaml) under `allowBuilds:`, listing the three native deps that wrangler needs (`esbuild`, `sharp`, `workerd`). This is the pnpm 11 surface for trusted-deps; the older `.npmrc` `[pnpm] onlyBuiltDependencies[]=...` form is silently ignored at install time. The `pnpm-lock.yaml` is committed for reproducible builds.
 
 ## How the auto-merge works
 
