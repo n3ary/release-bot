@@ -114,8 +114,8 @@ Generate the webhook secret with `openssl rand -hex 32` or similar.
 ### 3. Deploy the Worker
 
 ```bash
-npm install
-npm run deploy
+pnpm install   # installs deps; first run will prompt to approve build scripts (esbuild, sharp, workerd)
+pnpm deploy    # wrangler builds and uploads the Worker
 ```
 
 The Worker is now live at a `*.workers.dev` URL. Note the URL — you need it in step 4.
@@ -151,18 +151,39 @@ If you bump reviews to 1 in the future, the version-bump PR will wait for that r
 ## Development
 
 ```bash
+# Install deps
+pnpm install
+
+# If pnpm 11 prompts about build scripts (esbuild, sharp, workerd), run:
+#   pnpm approve-builds
+# (one-time per machine; the .npmrc lists the allowed packages, but
+# pnpm 11 requires explicit confirmation on first install)
+#
+# If you want to skip the approval entirely, install with --ignore-scripts:
+#   pnpm install --ignore-scripts
+# (the build scripts install prebuilt binaries that are already in the
+# packages; --ignore-scripts skips the post-install step and is safe for
+# Cloudflare Worker projects because wrangler uses the prebuilt binaries)
+
 # Run the CalVer unit tests
-npm test
+pnpm test
 
 # Run the Worker locally
-npm run dev
+pnpm dev
 # (the Worker is at http://localhost:8787)
 
 # Type check
-npm run typecheck
+pnpm typecheck
+
+# Build (alias for typecheck; no separate compile step -- wrangler bundles on deploy)
+pnpm build
 ```
 
 The Worker is stateless. There is no local database. Tests cover the CalVer logic (the only piece of stateful-ish logic); the GitHub API interactions are best tested against a real repo via the bot's actual deployment.
+
+## Package manager
+
+The bot uses **pnpm** (consistent with the rest of the n3ary org). The `packageManager` field in `package.json` pins the exact pnpm version; Corepack (built into Node 20+) reads this and uses the right version automatically. The `.npmrc` file (in `[pnpm]` section) whitelists the three native deps that wrangler needs (`esbuild`, `sharp`, `workerd`); pnpm 11 still requires a one-time `pnpm approve-builds` confirmation on first install, after which subsequent installs are silent. The `pnpm-lock.yaml` is committed for reproducible builds.
 
 ## How the auto-merge works
 
