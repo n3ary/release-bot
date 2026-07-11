@@ -7,9 +7,18 @@ compatibility_flags = ["nodejs_compat"]
 #   wrangler secret put GITHUB_APP_ID
 #   wrangler secret put GITHUB_APP_PRIVATE_KEY
 #   wrangler secret put GITHUB_WEBHOOK_SECRET
+#
+# BOT_VERSION is the source of truth for "what code is running
+# here". The CI deploy workflow (`.github/workflows/deploy.yml`)
+# reads the version from package.json and writes it here just
+# before running `wrangler deploy`. That way the Workers
+# dashboard shows the version, and the bot's first log line
+# per webhook includes it (so you can correlate a webhook
+# delivery against a specific release).
 [vars]
 TIMEZONE = "Europe/Bucharest"
 LOG_LEVEL = "info"
+BOT_VERSION = "0.3.0"
 
 # Cloudflare Workers free tier is 100k requests/day. n3ary has ~10 PRs/day
 # at most; well under the cap. Bump to paid plan only if traffic grows.

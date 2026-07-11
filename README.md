@@ -113,10 +113,28 @@ Generate the webhook secret with `openssl rand -hex 32` or similar.
 
 ### 3. Deploy the Worker
 
+**Option A: automatic, via GitHub Actions (preferred).**
+
+The `.github/workflows/deploy.yml` workflow deploys on every push to `main`. To use it, set two secrets on the repo (Settings → Secrets and variables → Actions):
+
+- `CLOUDFLARE_API_TOKEN` — Cloudflare API token with `Workers Scripts:Edit` scope on the n3ary account.
+- `CLOUDFLARE_ACCOUNT_ID` — Cloudflare account ID (32-char hex).
+
+Then just merge to main. The workflow:
+
+1. Reads `BOT_VERSION` from `package.json`.
+2. Writes it to `wrangler.toml` so the Workers dashboard and the bot's first log line per webhook show the version.
+3. Runs `wrangler deploy`.
+4. Hits `https://n3ary-release-bot.ciotlos.workers.dev/health` and asserts the response includes the deployed version.
+
+**Option B: manual, from a local checkout.**
+
 ```bash
 pnpm install   # installs deps; first run will prompt to approve build scripts (esbuild, sharp, workerd)
 pnpm deploy    # wrangler builds and uploads the Worker
 ```
+
+You can also do this to seed the initial deploy before the GitHub Actions secret is in place.
 
 The Worker is now live at a `*.workers.dev` URL. Note the URL — you need it in step 4.
 

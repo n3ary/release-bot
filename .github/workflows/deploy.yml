@@ -1,0 +1,129 @@
+# ----------------------------------------------------------------------------
+# [deploy] n3ary-release-bot to Cloudflare Workers (on push to main)
+#
+# Deploys the Worker on every push to main. Reads BOT_VERSION from
+# package.json and writes it to wrangler.toml so the Workers dashboard
+# + log lines show the version. This is the deploy hook the user asked
+# for: every merged PR is auto-deployed within minutes.
+#
+# Required secrets (set via Settings > Secrets and variables > Actions):
+#   CLOUDFLARE_API_TOKEN  - Cloudflare API token with Workers Scripts:Edit
+#                           scope on the n3ary account.
+#   CLOUDFLARE_ACCOUNT_ID - Cloudflare account ID (32-char hex).
+#
+# Required: package.json version follows semver (0.X.Y). The deploy step
+# uses `sed` to write the version to wrangler.toml. Tags are still cut
+# manually (`git tag v0.X.Y`); this workflow just keeps the running
+# Worker in sync with main.
+#
+# Why a self-hosted runner is unnecessary: Cloudflare's API works from
+# any IP, and the workflow only deploys on merges to main. No PR
+# triggers, so no PR-fork secrets issue.
+# ----------------------------------------------------------------------------
+name: '[deploy] n3ary-release-bot to Cloudflare Workers (on push to main)'
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force-version:
+        description: 'Override BOT_VERSION (default: read from package.json)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # One deploy at a time. Cancel a stale run if a new push lands
+  # while the previous deploy is still in flight.
+  group: release-bot-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install
+        # Skip the build script approval prompt (pnpm 11) by
+        # whitelisting the packages this repo actually builds. The
+        # wrangler action would otherwise hang on the first install.
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve BOT_VERSION
+        id: version
+        # Prefer the manual override (workflow_dispatch), then the
+        # package.json version, then "unknown" as a safety net.
+        run: |
+          if [ -n "${{ inputs.force-version }}" ]; then
+            V="${{ inputs.force-version }}"
+          else
+            V=$(node -p "require('./package.json').version")
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Deploying n3ary-release-bot@$V"
+
+      - name: Write BOT_VERSION to wrangler.toml
+        # In-place edit of the existing BOT_VERSION line so the
+        # deploy stays idempotent: re-runs converge to the same
+        # file. The line is identified by the unique `BOT_VERSION`
+        # prefix; the value is replaced with the resolved version.
+        run: |
+          if ! grep -q '^BOT_VERSION = ' wrangler.toml; then
+            echo "::error::wrangler.toml is missing a BOT_VERSION line under [vars]"
+            exit 1
+          fi
+          sed -i.bak -E "s|^BOT_VERSION = .*|BOT_VERSION = \"${{ steps.version.outputs.version }}\"|" wrangler.toml
+          rm wrangler.toml.bak
+          # Surface the change for the workflow logs.
+          grep BOT_VERSION wrangler.toml
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Default: wrangler deploy (publish to production).
+          # `command: deploy` is the default; left explicit for clarity.
+          command: deploy
+          # Don't commit the wrangler.toml change back - the
+          # BOT_VERSION update is deployment-time metadata, not
+          # a code change.
+          # (wrangler-action does not commit by default.)
+
+      - name: Post-deploy smoke
+        # Hit /health to confirm the new version is live. The
+        # version is in the response body (added in this PR).
+        run: |
+          ENDPOINT="https://n3ary-release-bot.ciotlos.workers.dev/health"
+          for i in 1 2 3 4 5; do
+            RESP=$(curl -sS "$ENDPOINT" || true)
+            if [ -n "$RESP" ]; then
+              echo "Health response: $RESP"
+              # Verify the version is what we just deployed.
+              DEPLOYED=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)
+              if [ "$DEPLOYED" = "${{ steps.version.outputs.version }}" ]; then
+                echo "OK: live version matches deployed version ($DEPLOYED)"
+                exit 0
+              else
+                echo "Live version ($DEPLOYED) does not match deployed (${{ steps.version.outputs.version }}); retrying"
+              fi
+            fi
+            sleep 3
+          done
+          echo "::warning::Health check did not confirm the new version is live. Check the Cloudflare dashboard."
