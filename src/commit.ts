@@ -9,14 +9,21 @@
 // checks pass (usually within seconds; with 0 required reviews,
 // no human click is needed).
 //
-// Two skip rules apply, per file:
-//   1. "no library changes" - the merge did not touch any file in
-//      the package's directory (including the package.json itself).
-//      A workflow-only or docs-only PR bumps nothing.
+// Skip rules, per file:
+//   1. "no library changes" (sub-packages only) - the merge did
+//      not touch any file in the sub-package's directory. A
+//      workflow-only or docs-only PR bumps nothing in a monorepo.
 //   2. "skip-if-already-touched" - the merge commit's version
 //      differs from the parent's, meaning the dev manually edited
 //      the version. The bot no-ops on that file; the dev's edit
 //      wins.
+//
+// The root package.json is NOT subject to rule #1 -- the bot's
+// contract (see docs/standards/org-automation.md) is to bump the
+// root version on every merged PR that didn't already touch the
+// version. Workflow / docs / config changes ARE user-facing (they
+// ship to production) and DO warrant a version bump. Rule #1 only
+// narrows the bump to the right sub-package in a monorepo.
 //
 // Both skip reasons are reported in the log and the PR body, so
 // the reason for a no-op is always visible.
@@ -40,22 +47,23 @@ export interface ReleaseResult {
 }
 
 /**
- * Determine whether a given package.json file is "touched" by a set
- * of changed files in the merge commit.
+ * Determine whether a given SUB-package's directory was touched by
+ * a set of changed files in the merge commit. The root `package.json`
+ * is NOT handled here -- it is always eligible to bump (per the
+ * bot's contract in org-automation.md); see `shouldBumpPackage` for
+ * the caller-level policy that combines the root rule with this
+ * sub-package check.
  *
- * A package is touched if any changed file is in or under the
- * package's directory. For the root `package.json` (no directory
- * prefix), the only change that touches it is a modification of the
- * root `package.json` itself - this prevents the root from being
- * bumped on every workflow / docs / config change that lives at the
- * repo root.
+ * A sub-package is touched if any changed file is in or under the
+ * sub-package's directory. Sibling sub-packages with similar
+ * directory names are not matched (e.g. `apps/gtfs-rt-old/...` does
+ * not touch `apps/gtfs-rt/package.json`).
  *
  * Examples (for the gtfs-publisher monorepo):
  *   - "apps/gtfs-rt/src/foo.ts"   -> touches "apps/gtfs-rt/package.json"
  *   - "apps/gtfs-rt/package.json" -> touches "apps/gtfs-rt/package.json"
  *   - "libs/spec/package.json"    -> touches "libs/spec/package.json"
  *   - ".github/workflows/x.yml"   -> touches nothing
- *   - "package.json" (modified)   -> touches the root "package.json"
  *   - "README.md"                 -> touches nothing
  *
  * Exported for unit testing.
@@ -64,13 +72,38 @@ export function isPackageTouched(
   packageJsonPath: string,
   changedFiles: readonly string[],
 ): boolean {
-  if (packageJsonPath === "package.json") {
-    return changedFiles.includes("package.json");
-  }
+  // The root `package.json` has no directory prefix. This function
+  // is the sub-package rule and explicitly does NOT take a position
+  // on the root -- callers route the root through shouldBumpPackage.
+  // Returning false here keeps the function "no opinion on root"
+  // instead of accidentally matching `package.json === dir` when
+  // the path collapses to itself.
+  if (packageJsonPath === "package.json") return false;
   const dir = packageJsonPath.replace(/\/package\.json$/, "");
   return changedFiles.some(
     (f) => f === dir || f.startsWith(dir + "/"),
   );
+}
+
+/**
+ * Caller-level policy: should this package be bumped?
+ *
+ * - The root `package.json` is ALWAYS bumped (unless the merge
+ *   already touched the version -- that skip rule lives in the
+ *   caller's `headFile.version !== parentFile.version` check).
+ *   Workflow / docs / config changes ship to production and DO
+ *   warrant a root version bump. See org-automation.md.
+ * - Sub-packages follow `isPackageTouched`: only bump a sub-package
+ *   whose directory the merge actually touched.
+ *
+ * Exported for unit testing the root-bypass regression.
+ */
+export function shouldBumpPackage(
+  packageJsonPath: string,
+  changedFiles: readonly string[],
+): boolean {
+  if (packageJsonPath === "package.json") return true;
+  return isPackageTouched(packageJsonPath, changedFiles);
 }
 
 /**
@@ -180,7 +213,7 @@ export async function discoverAndOpenPR(
   const toBump: { path: string; currentVersion: string; file: PackageJsonFile }[] = [];
 
   for (const path of packagePaths) {
-    if (!isPackageTouched(path, changedFiles)) {
+    if (!shouldBumpPackage(path, changedFiles)) {
       log(`Skipping ${path}: no files changed in this package`);
       skipped.push(path);
       continue;

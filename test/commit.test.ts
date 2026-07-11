@@ -5,9 +5,17 @@
 // the "no library changes -> no bump" rule that keeps workflow-only
 // and docs-only PRs from triggering version bumps in every package
 // of a monorepo.
+//
+// Two layers:
+//   - `isPackageTouched` -- sub-package rule: a sub-package's
+//     directory was touched by the merge. No opinion on the root.
+//   - `shouldBumpPackage` -- caller-level policy: combines the
+//     sub-package rule with the root-bypass (the bot's contract
+//     per org-automation.md is to bump the root on every merge
+//     that didn't already touch the version).
 
 import { describe, expect, it } from "vitest";
-import { isPackageTouched } from "../src/commit.ts";
+import { isPackageTouched, shouldBumpPackage } from "../src/commit.ts";
 
 describe("isPackageTouched", () => {
   describe("sub-packages", () => {
@@ -66,12 +74,18 @@ describe("isPackageTouched", () => {
     });
   });
 
-  describe("root package.json", () => {
-    it("returns true when the root package.json itself changed", () => {
-      expect(isPackageTouched("package.json", ["package.json"])).toBe(true);
+  // The function intentionally has no special case for the root
+  // `package.json` (it only makes sense for sub-packages with a
+  // directory prefix). Caller-level root handling is in
+  // shouldBumpPackage below.
+  describe("root package.json (function has no opinion)", () => {
+    it("returns false when the root package.json itself changed", () => {
+      // Defensive: callers should route root via shouldBumpPackage.
+      // isPackageTouched has no "root" branch on purpose.
+      expect(isPackageTouched("package.json", ["package.json"])).toBe(false);
     });
 
-    it("returns false when a workflow file changed (not the root package.json)", () => {
+    it("returns false for a workflow change", () => {
       expect(
         isPackageTouched("package.json", [
           ".github/workflows/build-gtfs-rt.yml",
@@ -79,74 +93,116 @@ describe("isPackageTouched", () => {
       ).toBe(false);
     });
 
-    it("returns false when a docs file changed", () => {
-      expect(isPackageTouched("package.json", ["README.md"])).toBe(false);
-    });
-
-    it("returns false when a sub-package's file changed", () => {
-      // Sub-package changes are "owned" by the sub-package's
-      // package.json, not the root.
-      expect(
-        isPackageTouched("package.json", ["apps/gtfs-rt/src/main.ts"]),
-      ).toBe(false);
-    });
-
-    it("returns false when no files changed", () => {
+    it("returns false for an empty changed-files list", () => {
       expect(isPackageTouched("package.json", [])).toBe(false);
     });
   });
+});
 
-  describe("end-to-end monorepo scenario", () => {
-    // Mimics the gtfs-publisher layout: 1 root + 3 sub-packages.
-    const packages = [
+describe("shouldBumpPackage (caller policy)", () => {
+  describe("root package.json", () => {
+    it("is always bumped, even when the merge did not touch package.json", () => {
+      // Regression: prior to the fix, the bot special-cased the root
+      // in isPackageTouched and skipped it on workflow / docs /
+      // config-only PRs. The bot's contract is to bump the root on
+      // every merge that did not already touch the version (per
+      // docs/standards/org-automation.md). This test pins that
+      // behaviour.
+      expect(shouldBumpPackage("package.json", ["README.md"])).toBe(true);
+      expect(
+        shouldBumpPackage("package.json", [
+          ".github/workflows/build-gtfs-rt.yml",
+        ]),
+      ).toBe(true);
+      expect(
+        shouldBumpPackage("package.json", ["apps/gtfs-rt/src/main.ts"]),
+      ).toBe(true);
+    });
+
+    it("is always bumped, even when no files changed", () => {
+      expect(shouldBumpPackage("package.json", [])).toBe(true);
+    });
+
+    it("is always bumped when only the root package.json itself changed", () => {
+      expect(shouldBumpPackage("package.json", ["package.json"])).toBe(true);
+    });
+  });
+
+  describe("sub-packages", () => {
+    it("is bumped when a file in its directory changed", () => {
+      expect(
+        shouldBumpPackage("apps/gtfs-rt/package.json", [
+          "apps/gtfs-rt/src/main.ts",
+        ]),
+      ).toBe(true);
+    });
+
+    it("is NOT bumped when no file in its directory changed", () => {
+      expect(
+        shouldBumpPackage("apps/gtfs-rt/package.json", ["README.md"]),
+      ).toBe(false);
+    });
+  });
+});
+
+describe("end-to-end monorepo scenario", () => {
+  // Mimics the gtfs-publisher layout: 1 root + 3 sub-packages.
+  const packages = [
+    "package.json",
+    "apps/gtfs-rt/package.json",
+    "apps/gtfs-static/package.json",
+    "libs/spec/package.json",
+  ];
+
+  // Uses the caller-level policy so the root-bypass is exercised.
+  function bumpedBy(changed: string[]): string[] {
+    return packages.filter((p) => shouldBumpPackage(p, changed));
+  }
+
+  it("workflow-only change: only the root is bumped", () => {
+    // Regression: prior to the fix, this returned [] (root skipped).
+    // Per org-automation.md, a workflow change is a user-facing
+    // production change and warrants a root version bump.
+    expect(bumpedBy([".github/workflows/build-gtfs-rt.yml"])).toEqual([
+      "package.json",
+    ]);
+  });
+
+  it("docs-only change: only the root is bumped", () => {
+    expect(bumpedBy(["README.md", "docs/specs/x.md"])).toEqual([
+      "package.json",
+    ]);
+  });
+
+  it("gtfs-rt code change: root + that package bumped", () => {
+    expect(bumpedBy(["apps/gtfs-rt/src/main.ts"])).toEqual([
       "package.json",
       "apps/gtfs-rt/package.json",
-      "apps/gtfs-static/package.json",
+    ]);
+  });
+
+  it("libs/spec change: root + that package bumped", () => {
+    expect(
+      bumpedBy(["libs/spec/src/index.ts", "libs/spec/package.json"]),
+    ).toEqual(["package.json", "libs/spec/package.json"]);
+  });
+
+  it("multi-package change: root + all touched packages bumped", () => {
+    expect(
+      bumpedBy([
+        "apps/gtfs-rt/src/main.ts",
+        "libs/spec/src/index.ts",
+      ]),
+    ).toEqual([
+      "package.json",
+      "apps/gtfs-rt/package.json",
       "libs/spec/package.json",
-    ];
+    ]);
+  });
 
-    function touchedBy(changed: string[]): string[] {
-      return packages.filter((p) => isPackageTouched(p, changed));
-    }
-
-    it("workflow-only change: nothing bumped", () => {
-      expect(
-        touchedBy([".github/workflows/build-gtfs-rt.yml"]),
-      ).toEqual([]);
-    });
-
-    it("docs-only change: nothing bumped", () => {
-      expect(touchedBy(["README.md", "docs/specs/x.md"])).toEqual([]);
-    });
-
-    it("gtfs-rt code change: only that package bumped", () => {
-      expect(
-        touchedBy(["apps/gtfs-rt/src/main.ts"]),
-      ).toEqual(["apps/gtfs-rt/package.json"]);
-    });
-
-    it("libs/spec change: only that package bumped", () => {
-      expect(
-        touchedBy(["libs/spec/src/index.ts", "libs/spec/package.json"]),
-      ).toEqual(["libs/spec/package.json"]);
-    });
-
-    it("multi-package change: all touched packages bumped", () => {
-      expect(
-        touchedBy([
-          "apps/gtfs-rt/src/main.ts",
-          "libs/spec/src/index.ts",
-        ]),
-      ).toEqual([
-        "apps/gtfs-rt/package.json",
-        "libs/spec/package.json",
-      ]);
-    });
-
-    it("root package.json change: only root bumped", () => {
-      expect(
-        touchedBy(["package.json", "pnpm-workspace.yaml"]),
-      ).toEqual(["package.json"]);
-    });
+  it("root package.json change: only root bumped", () => {
+    expect(
+      bumpedBy(["package.json", "pnpm-workspace.yaml"]),
+    ).toEqual(["package.json"]);
   });
 });
