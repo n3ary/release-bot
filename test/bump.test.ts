@@ -230,14 +230,19 @@ describe("nextSemVer", () => {
     expect(nextSemVer("")).toBe("0.1.0");
   });
 
-  it("handles the calver->semver cutover case (weird but valid)", () => {
+  it("returns null for calver-shaped values (skip + manual cutover)", () => {
     // A library that was previously bumped to a calver value
-    // (e.g. "26.7.11-2") will parse as semver major=26 with
-    // prerelease=2. The first bot bump drops the prerelease,
-    // giving the real release of the same major.patch. The next
-    // bump is a patch+1. This is documented in the nextSemVer
-    // doc-comment; the test pins the behaviour.
-    expect(nextSemVer("26.7.11-2")).toBe("26.7.11");
-    expect(nextSemVer("26.7.11")).toBe("26.7.12");
+    // (e.g. "26.7.11-2") parses as BOTH a valid calver AND a
+    // valid semver (major=26, prerelease=2). The bot must NOT
+    // produce the hybrid "calver-as-semver" value (e.g.
+    // `26.7.11`) that a naive drop-prerelease would yield --
+    // that is technically valid semver but a weird MAJOR for
+    // a library. Instead, return null so commit.ts can skip
+    // the file with a clear log line; a human does the
+    // one-time cutover to a clean `MAJOR.MINOR.PATCH` (e.g.
+    // 0.3.8) and the bot takes over from there.
+    expect(nextSemVer("26.7.11-2")).toBeNull();
+    expect(nextSemVer("26.7.11")).toBeNull();
+    expect(nextSemVer("26.7.11-1")).toBeNull();
   });
 });
