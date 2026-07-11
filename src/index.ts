@@ -6,12 +6,16 @@
 //   GET  /health    - health check
 //
 // The bot is a stateless webhook handler. On every merged PR, it
-// bumps the version in package.json files on the default branch
-// using CalVer (YY.M.D-N) in Europe/Bucharest timezone.
+// opens a pull request against the default branch that bumps the
+// version in each package.json to the next CalVer (YY.M.D-N) in
+// Europe/Bucharest timezone. Auto-merge is enabled on the PR, so
+// the version lands on main as soon as the required status checks
+// pass (usually within seconds; with 0 required reviews, no human
+// click is needed).
 
 import { Octokit } from "octokit";
 import { getInstallationToken } from "./auth.ts";
-import { discoverAndBump } from "./commit.ts";
+import { discoverAndOpenPR } from "./commit.ts";
 import { isMergedPullRequestClose, verifyWebhookSignature } from "./webhook.ts";
 import type { Env, PullRequestEvent } from "./types.ts";
 
@@ -91,14 +95,15 @@ async function handleWebhook(
     return new Response("auth failed", { status: 500 });
   }
 
-  // 4. Run the bump with bounded retries on 409 Conflict (someone
-  //    else pushed between our read and write).
+  // 4. Run the release with bounded retries on 409 Conflict (someone
+  //    else pushed between our read and write, or the branch was
+  //    created in a parallel webhook).
   const octokit = new Octokit({ auth: token, userAgent: "n3ary-release-bot" });
   const maxRetries = 3;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await discoverAndBump(
+      const result = await discoverAndOpenPR(
         octokit,
         owner,
         repo,
@@ -107,8 +112,11 @@ async function handleWebhook(
         env,
         log,
       );
+      const prInfo = result.pr
+        ? ` PR #${result.pr.number} (${result.pr.html_url}) opened with auto-merge.`
+        : " No PR opened (idempotency no-op or no files to bump).";
       log(
-        `Done: ${result.bumped.length} bumped, ${result.skipped.length} skipped`,
+        `Done: ${result.bumped.length} bumped, ${result.skipped.length} skipped.${prInfo}`,
       );
       return new Response("ok", { status: 200 });
     } catch (err) {
@@ -119,13 +127,13 @@ async function handleWebhook(
         log(`409 Conflict on attempt ${attempt}; retrying`);
         continue;
       }
-      log(`Bump failed after ${attempt} attempt(s): ${message}`);
+      log(`Release failed after ${attempt} attempt(s): ${message}`);
       // Return 500 so GitHub marks the delivery as failed and retries.
-      return new Response("bump failed", { status: 500 });
+      return new Response("release failed", { status: 500 });
     }
   }
 
-  return new Response("bump failed after retries", { status: 500 });
+  return new Response("release failed after retries", { status: 500 });
 }
 
 async function handleManualBump(
