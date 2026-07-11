@@ -85,6 +85,17 @@ async function handleWebhook(
 
   log(`Processing merge: ${owner}/${repo}@${mergeSha} (branch: ${defaultBranch})`);
 
+  // 2a. Self-bump guard: skip the bot's own repo. The bot's
+  //     version is semver, not CalVer; auto-bumping it would
+  //     silently overwrite the manual version (e.g. "0.2.1" ->
+  //     "26.7.11-2"). The user closes the resulting release PR
+  //     every time, so the right answer is to skip the repo
+  //     entirely.
+  if (owner.toLowerCase() === "n3ary" && repo.toLowerCase() === "release-bot") {
+    log("Skipping self-bump: this is the release bot's own repo");
+    return new Response("skipped (self)", { status: 200 });
+  }
+
   // 3. Get an installation access token. Exchange the app's JWT.
   let token: string;
   try {
