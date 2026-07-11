@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bumpSchemeFor,
+  decodeBase64Utf8,
   isPackageTouched,
   isPrivatePackage,
   shouldBumpPackage,
@@ -254,5 +255,81 @@ describe("bumpSchemeFor", () => {
       .toBe("semver");
     expect(bumpSchemeFor('{"private": false, "name": "x"}'))
       .toBe("semver");
+  });
+});
+
+// Test the UTF-8 base64 decoder used by readPackageJsonAt.
+//
+// GitHub's getContent API returns file bodies as base64. To get
+// back the original string, we have to base64-decode the
+// bytes AND interpret them as UTF-8 -- `atob()` alone gives a
+// "binary string" whose code points are raw byte values, not
+// valid UTF-8 code points, and passing that to JSON.parse
+// would mangle non-ASCII characters on the round-trip.
+
+
+
+
+function utf8ToBase64(s: string): string {
+  // Real btoa() of UTF-8 bytes for the test fixture.
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+describe("decodeBase64Utf8", () => {
+  it("decodes ASCII correctly", () => {
+    const s = "hello world\n";
+    expect(decodeBase64Utf8(utf8ToBase64(s))).toBe(s);
+  });
+
+  it("decodes a single em-dash without mojibake", () => {
+    // The original symptom: the bot's `atob()` produced the
+    // bytes 0xE2 0x80 0x94 as the code points U+00E2 U+0080
+    // U+0094 ("Ã" "Â" control). `JSON.parse` preserved those
+    // code points and re-stringifying + UTF-8-encoding the
+    // result produced "Ã¢ÂÂ" (6 bytes) for a single em-dash.
+    // The fix decodes the base64 bytes correctly as UTF-8 so
+    // the em-dash (U+2014) round-trips as the em-dash.
+    const s = "Live GTFS-RT adapter — polls upstream feeds";
+    expect(decodeBase64Utf8(utf8ToBase64(s))).toBe(s);
+  });
+
+  it("decodes a package.json with multi-byte UTF-8 in description", () => {
+    // Real-world: apps/gtfs-rt/package.json has an em-dash
+    // in the description. The bot's read step used to corrupt
+    // it to mojibake. After this fix, the round-trip is clean.
+    const s = JSON.stringify(
+      {
+        name: "@gtfs/rt",
+        version: "26.7.11-1",
+        description: "Live GTFS-RT adapter — polls upstream feeds, applies per-feed quirks, publishes a clean FeedMessage. Issue #34 step 7.",
+      },
+      null,
+      2,
+    );
+    expect(decodeBase64Utf8(utf8ToBase64(s))).toBe(s);
+  });
+
+  it("decodes accented Latin-1 characters", () => {
+    const s = "Compañía de Transporte Público Cluj-Napoca";
+    expect(decodeBase64Utf8(utf8ToBase64(s))).toBe(s);
+  });
+
+  it("decodes CJK characters", () => {
+    const s = "公交车实时位置";
+    expect(decodeBase64Utf8(utf8ToBase64(s))).toBe(s);
+  });
+
+  it("strips newlines in the base64 input (GitHub's padding)", () => {
+    // GitHub's getContent sometimes returns base64 with
+    // embedded newlines for line wrapping. The decoder
+    // strips them before decoding.
+    const s = "with newlines";
+    const b64 = utf8ToBase64(s);
+    const b64WithNewlines =
+      b64.slice(0, 40) + "\n" + b64.slice(40, 80) + "\n" + b64.slice(80);
+    expect(decodeBase64Utf8(b64WithNewlines)).toBe(s);
   });
 });

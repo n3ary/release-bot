@@ -429,6 +429,28 @@ export async function discoverAndOpenPR(
   return { bumped, skipped, pr };
 }
 
+/**
+ * Decode a base64 string from the GitHub `getContent` API as
+ * a UTF-8 string. `atob()` alone produces a "binary string"
+ * whose code points are raw byte values (0x80, 0x94, etc.),
+ * not valid UTF-8 code points. Passing that to `JSON.parse`
+ * would preserve the raw code points as literal characters,
+ * and re-stringifying + UTF-8 encoding the result produces
+ * mojibake (`Ã¢ÂÂ` for a single em-dash). Decoding the
+ * bytes explicitly with `TextDecoder("utf-8")` groups the
+ * multi-byte sequences into proper code points.
+ *
+ * Exported for unit testing.
+ */
+export function decodeBase64Utf8(b64: string): string {
+  return new TextDecoder("utf-8").decode(
+    Uint8Array.from(
+      atob(b64.replace(/\n/g, "")),
+      (c) => c.charCodeAt(0),
+    ),
+  );
+}
+
 function renderPrBody(
   bumped: PackageJsonFile[],
   skipped: string[],
@@ -486,7 +508,7 @@ async function readPackageJsonAt(
     if (Array.isArray(data) || data.type !== "file") return null;
     if (data.encoding !== "base64" || typeof data.content !== "string") return null;
 
-    const content = atob(data.content.replace(/\n/g, ""));
+    const content = decodeBase64Utf8(data.content);
     let parsed: { version?: string };
     try {
       parsed = JSON.parse(content);
