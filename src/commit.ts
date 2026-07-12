@@ -13,10 +13,14 @@
 //   1. "no library changes" (sub-packages only) - the merge did
 //      not touch any file in the sub-package's directory. A
 //      workflow-only or docs-only PR bumps nothing in a monorepo.
+//      Pure no-op: file is not included in the bot's release commit.
 //   2. "skip-if-already-touched" - the merge commit's version
 //      differs from the parent's, meaning the dev manually edited
-//      the version. The bot no-ops on that file; the dev's edit
-//      wins.
+//      the version. The bot's `version` field for that file is a
+//      no-op (the dev's edit wins). BUT the file is still included
+//      in the bot's release commit with a touch marker (see
+//      `withSkipMarker`) so the consumer's publish workflow's
+//      paths filter matches and the dev's version gets published.
 //
 // The root package.json is NOT subject to rule #1 -- the bot's
 // contract (see docs/standards/org-automation.md) is to bump the
@@ -26,7 +30,10 @@
 // narrows the bump to the right sub-package in a monorepo.
 //
 // Both skip reasons are reported in the log and the PR body, so
-// the reason for a no-op is always visible.
+// the reason for a no-op is always visible. Rule #2's "touched
+// for publish trigger" is reported in the PR body as a separate
+// "Touched" section so the human reviewer can see the dev's
+// version was preserved (not silently overwritten by the bot).
 
 import { Octokit } from "octokit";
 import { DateTime } from "luxon";
@@ -43,6 +50,18 @@ import type { Env, PackageJsonFile } from "./types.ts";
 
 export interface ReleaseResult {
   bumped: PackageJsonFile[];
+  /**
+   * Files the dev's merge already bumped (skip-if-already-touched).
+   * The bot did NOT change the version on these -- the dev's edit
+   * wins. But the bot DID include them in the release commit with
+   * a touch marker (see `withSkipMarker`) so the consumer's
+   * publish workflow's paths filter matches and the dev's version
+   * gets published to GH Packages.
+   *
+   * Empty when the merge did not manually bump any package.json
+   * (every file went through the normal "bot bumps version" path).
+   */
+  touched: PackageJsonFile[];
   skipped: string[];
   pr: PullRequestResult | null;
 }
@@ -193,7 +212,7 @@ export async function discoverAndOpenPR(
         existing.head_ref
       }) already exists; no-op`,
     );
-    return { bumped: [], skipped: [], pr: existing };
+    return { bumped: [], touched: [], skipped: [], pr: existing };
   }
 
   // 2. Resolve the merge commit's parent (HEAD~1) for the
@@ -225,7 +244,7 @@ export async function discoverAndOpenPR(
 
   if (packagePaths.length === 0) {
     log("No package.json files found in tree; nothing to bump");
-    return { bumped: [], skipped: [], pr: null };
+    return { bumped: [], touched: [], skipped: [], pr: null };
   }
   log(`Found ${packagePaths.length} package.json files`);
 
@@ -244,10 +263,20 @@ export async function discoverAndOpenPR(
   // 5. For each package.json, check both skip rules:
   //    a. "no library changes" - no changed file is under the
   //       package's directory. A docs-only / workflow-only PR
-  //       should not bump anything.
+  //       should not bump anything. Pure no-op.
   //    b. "skip-if-already-touched" - the merge commit already
-  //       changed the version (dev's manual edit). Bot no-ops.
+  //       changed the version (dev's manual edit). Bot does NOT
+  //       bump the version (dev wins), but DOES include the file
+  //       in the release commit with a touch marker so the
+  //       consumer's publish workflow's paths filter matches and
+  //       the dev's version gets published to GH Packages.
+  //       Without this touch, a manual version bump on a
+  //       library would land on main but never publish (the
+  //       bot's release commit only touches the files it bumps,
+  //       and the publish workflow's paths filter would exclude
+  //       the commit entirely).
   const skipped: string[] = [];
+  const touched: PackageJsonFile[] = [];
   const toBump: { path: string; currentVersion: string; file: PackageJsonFile }[] = [];
 
   for (const path of packagePaths) {
@@ -266,17 +295,32 @@ export async function discoverAndOpenPR(
     if (headFile.version !== parentFile.version) {
       log(
         `Skipping ${path}: merge already changed version ` +
-          `(${parentFile.version} -> ${headFile.version})`,
+          `(${parentFile.version} -> ${headFile.version}); ` +
+          `touching for publish trigger`,
       );
       skipped.push(path);
+      touched.push({
+        path,
+        content: withSkipMarker(
+          headFile.content,
+          parentFile.version,
+          headFile.version,
+          mergeSha,
+          new Date().toISOString(),
+        ),
+        // The dev's version is what gets published; the touch
+        // marker is metadata only. Reporting the dev's version
+        // here keeps the PR body's per-file summary truthful.
+        version: headFile.version,
+      });
       continue;
     }
     toBump.push({ path, currentVersion: headFile.version, file: headFile });
   }
 
-  if (toBump.length === 0) {
-    log("No files to bump (all skipped)");
-    return { bumped: [], skipped, pr: null };
+  if (toBump.length === 0 && touched.length === 0) {
+    log("No files to bump or touch (all skipped)");
+    return { bumped: [], touched, skipped, pr: null };
   }
 
   // 6. Compute the next version for each file. The scheme is
@@ -321,6 +365,20 @@ export async function discoverAndOpenPR(
   // 7. Create the branch. Branch name encodes the next version so
   //    it's obvious in the PR list. If the branch already exists
   //    (from a previous failed attempt), use the existing one.
+  //
+  //    Edge case: if every candidate was either a calver-shaped
+  //    library (no next version computable) OR a touch (no version
+  //    bump), `bumped` ends up empty. In that case we bail -- the
+  //    "no real release happened" case. The touch will be
+  //    re-detected on the next merge that actually bumps a version.
+  if (bumped.length === 0) {
+    log(
+      "No files to bump after the bump loop (all calver-shaped " +
+        "or all touched-only); not opening a release PR",
+    );
+    return { bumped: [], touched, skipped, pr: null };
+  }
+
   const primaryVersion = bumped[0].version;
   const branchName = `release/calver-${primaryVersion}`;
   const branchResult = await createBranch(
@@ -334,20 +392,30 @@ export async function discoverAndOpenPR(
     `Branch ${branchName}: ${branchResult === "created" ? "created" : "already exists, using it"}`,
   );
 
-  // 8. Create the commit with all bumped files. Uses the Git Data
-  //    API: create blobs for the new content, build a tree based
-  //    on the merge commit's tree, create a commit on the new
-  //    branch, update the ref.
+  // 8. Create the commit with all bumped + touched files. Uses the
+  //    Git Data API: create blobs for the new content, build a
+  //    tree based on the merge commit's tree, create a commit on
+  //    the new branch, update the ref.
+  //
+  //    `bumped` = files the bot actually changed the version on.
+  //    `touched` = files the bot didn't bump (dev's edit wins)
+  //    but DID include in the commit so the consumer's publish
+  //    workflow's paths filter matches. Without the touched files
+  //    in the commit, a dev's manual version bump would land on
+  //    main but never get published to GH Packages (the bot's
+  //    release commit wouldn't touch the file, so the publish
+  //    workflow's paths filter would exclude the push entirely).
   //
   //    Note: when `base_tree` is set, GitHub preserves the base
   //    tree's entries. We only need to pass the entries that
-  //    change (the bumped package.json blobs). Earlier code tried
-  //    to pass the entire filtered base tree back, but the
-  //    recursive tree returns mixed `blob` and `tree` entries and
-  //    hard-coding `type: "tree"` for all of them caused GitHub
-  //    to reject blob shas as "not a valid tree".
+  //    change (the bumped + touched package.json blobs). Earlier
+  //    code tried to pass the entire filtered base tree back, but
+  //    the recursive tree returns mixed `blob` and `tree` entries
+  //    and hard-coding `type: "tree"` for all of them caused
+  //    GitHub to reject blob shas as "not a valid tree".
+  const allChanged = [...bumped, ...touched];
   const updatedBlobs = await Promise.all(
-    bumped.map(async (file) => {
+    allChanged.map(async (file) => {
       const { data: blob } = await octokit.rest.git.createBlob({
         owner,
         repo,
@@ -400,7 +468,7 @@ export async function discoverAndOpenPR(
     ? `chore(release): ${bumped[0].version}`
     : `chore(release): ${bumped.map((f) => f.version).join(", ")}`;
 
-  const prBody = renderPrBody(bumped, skipped, owner, repo, mergeSha);
+  const prBody = renderPrBody(bumped, touched, skipped, owner, repo, mergeSha);
 
   const pr = await openPullRequest(
     octokit,
@@ -430,7 +498,7 @@ export async function discoverAndOpenPR(
     );
   }
 
-  return { bumped, skipped, pr };
+  return { bumped, skipped, touched, pr };
 }
 
 /**
@@ -455,8 +523,57 @@ export function decodeBase64Utf8(b64: string): string {
   );
 }
 
+/**
+ * Touch a package.json content with a skip-marker field so the
+ * consumer's publish workflow's paths filter matches and the
+ * dev's manual version bump gets published to GH Packages.
+ *
+ * Why a field, not a whitespace tweak: the file is usually
+ * already canonical (2-space indent, trailing newline) by the
+ * time the bot touches it, so a re-serialization is a no-op.
+ * The marker field is a guaranteed real content change.
+ *
+ * Why a top-level field, not a comment or sidecar file: JSON
+ * has no comments, and a sidecar file would be ignored by the
+ * publish workflow's paths filter (which only matches files
+ * inside the package's directory like `package.json`, `src/**`,
+ * `tsconfig*.json`).
+ *
+ * Why `_n3ary_release_bot_skip` (underscore prefix): npm and
+ * pnpm ignore unknown fields, but they recognize the
+ * underscore-prefix convention as "private/internal". A future
+ * dev can grep `_n3ary_release_bot_skip` to find every file the
+ * bot has ever touched-on-skip and audit/clean them up.
+ *
+ * `at` is the bot's run time. On every release that re-touches
+ * the file, the timestamp is updated, so the diff is real and
+ * the file appears in subsequent bot release commits (so the
+ * publish workflow keeps firing for libraries that the dev
+ * keeps manually bumping).
+ *
+ * Exported for unit testing.
+ */
+export function withSkipMarker(
+  content: string,
+  previousVersion: string,
+  currentVersion: string,
+  mergeSha: string,
+  at: string,
+): string {
+  const parsed = JSON.parse(content) as Record<string, unknown>;
+  parsed._n3ary_release_bot_skip = {
+    reason: "merge-changed-version",
+    previous_version: previousVersion,
+    current_version: currentVersion,
+    merge_sha: mergeSha,
+    at,
+  };
+  return JSON.stringify(parsed, null, 2) + "\n";
+}
+
 function renderPrBody(
   bumped: PackageJsonFile[],
+  touched: PackageJsonFile[],
   skipped: string[],
   owner: string,
   repo: string,
@@ -473,6 +590,15 @@ function renderPrBody(
     lines.push(`Bumps ${bumped.length} package.json files:`);
     for (const file of bumped) {
       lines.push(`- \`${file.path}\` -> \`${file.version}\``);
+    }
+  }
+  if (touched.length > 0) {
+    lines.push("");
+    lines.push(
+      "Touched (version already bumped by the merge; included for the publish workflow's paths filter):",
+    );
+    for (const file of touched) {
+      lines.push(`- \`${file.path}\` -> \`${file.version}\` (dev's bump)`);
     }
   }
   if (skipped.length > 0) {

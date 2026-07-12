@@ -21,6 +21,7 @@ import {
   isPackageTouched,
   isPrivatePackage,
   shouldBumpPackage,
+  withSkipMarker,
 } from "../src/commit.ts";
 
 describe("isPackageTouched", () => {
@@ -331,5 +332,112 @@ describe("decodeBase64Utf8", () => {
     const b64WithNewlines =
       b64.slice(0, 40) + "\n" + b64.slice(40, 80) + "\n" + b64.slice(80);
     expect(decodeBase64Utf8(b64WithNewlines)).toBe(s);
+  });
+});
+
+// Test the "skip marker" touch used to force the publish workflow
+// to fire on a merge where the dev already bumped the version.
+//
+// Background: the bot's `skip-if-already-touched` rule no-ops
+// on a file when the merge commit already changed its version
+// (the dev's edit wins). But the bot still needs the file in
+// the release commit so the consumer's publish workflow's
+// paths filter matches -- otherwise the dev's manual version
+// bump lands on main but never gets published to GH Packages.
+// `withSkipMarker` produces a content-changing touch (a new
+// top-level `_n3ary_release_bot_skip` field) that makes the
+// file a real diff in the bot's release commit.
+
+describe("withSkipMarker", () => {
+  const baseInput = JSON.stringify(
+    {
+      name: "@n3ary/gtfs-adapter-cluj-napoca",
+      version: "0.3.13",
+      type: "module",
+    },
+    null,
+    2,
+  );
+
+  it("preserves the dev's version field (does not bump)", () => {
+    // The touch is metadata only -- the dev's "0.3.13" stays as
+    // "0.3.13". The bot does not increment on top of the dev's
+    // bump; that would race with the dev's intent and could
+    // double-bump a release.
+    const out = withSkipMarker(baseInput, "0.3.12", "0.3.13", "44b9241", "2026-07-12T21:11:05.000Z");
+    const parsed = JSON.parse(out);
+    expect(parsed.version).toBe("0.3.13");
+  });
+
+  it("adds a top-level _n3ary_release_bot_skip field with reason metadata", () => {
+    const out = withSkipMarker(baseInput, "0.3.12", "0.3.13", "44b9241", "2026-07-12T21:11:05.000Z");
+    const parsed = JSON.parse(out);
+    expect(parsed._n3ary_release_bot_skip).toEqual({
+      reason: "merge-changed-version",
+      previous_version: "0.3.12",
+      current_version: "0.3.13",
+      merge_sha: "44b9241",
+      at: "2026-07-12T21:11:05.000Z",
+    });
+  });
+
+  it("produces a content change even when the input is already canonical", () => {
+    // Regression: a re-serialization-only touch is a no-op for
+    // canonical files (2-space indent, trailing newline). The
+    // marker field guarantees a real diff every time, which is
+    // what the publish workflow's paths filter needs to match.
+    const out = withSkipMarker(baseInput, "0.3.12", "0.3.13", "44b9241", "2026-07-12T21:11:05.000Z");
+    expect(out).not.toBe(baseInput);
+    // The marker field must appear in the output.
+    expect(out).toContain("_n3ary_release_bot_skip");
+  });
+
+  it("preserves all other fields verbatim", () => {
+    const out = withSkipMarker(baseInput, "0.3.12", "0.3.13", "44b9241", "2026-07-12T21:11:05.000Z");
+    const parsed = JSON.parse(out);
+    expect(parsed.name).toBe("@n3ary/gtfs-adapter-cluj-napoca");
+    expect(parsed.type).toBe("module");
+    // No fields dropped, no fields renamed.
+    expect(Object.keys(parsed).sort()).toEqual(
+      ["_n3ary_release_bot_skip", "name", "type", "version"].sort(),
+    );
+  });
+
+  it("overwrites a pre-existing marker field with the latest run's metadata", () => {
+    // On a re-touch (dev bumps the same file in a later merge
+    // without the bot bumping), the previous marker field is
+    // overwritten with the new run's metadata. The `at` field
+    // always reflects the most recent run, so a reader can tell
+    // when the file was last touched.
+    const withOld = JSON.stringify(
+      {
+        ...JSON.parse(baseInput),
+        _n3ary_release_bot_skip: {
+          reason: "merge-changed-version",
+          previous_version: "0.3.11",
+          current_version: "0.3.12",
+          merge_sha: "9f4c475",
+          at: "2026-07-12T20:35:55.000Z",
+        },
+      },
+      null,
+      2,
+    );
+    const out = withSkipMarker(withOld, "0.3.12", "0.3.13", "44b9241", "2026-07-12T21:11:05.000Z");
+    const parsed = JSON.parse(out);
+    expect(parsed._n3ary_release_bot_skip.previous_version).toBe("0.3.12");
+    expect(parsed._n3ary_release_bot_skip.current_version).toBe("0.3.13");
+    expect(parsed._n3ary_release_bot_skip.merge_sha).toBe("44b9241");
+  });
+
+  it("emits canonical JSON (2-space indent + trailing newline)", () => {
+    // Matches the convention the bot already uses for bumped
+    // files (`JSON.stringify(parsed, null, 2) + "\n"`). A
+    // reviewer diffing the bot's release commit sees the same
+    // shape for bumped and touched files.
+    const out = withSkipMarker(baseInput, "0.3.12", "0.3.13", "44b9241", "2026-07-12T21:11:05.000Z");
+    expect(out.endsWith("\n")).toBe(true);
+    // 2-space indent -- no tabs, no 4-space indent.
+    expect(out).toMatch(/^\{\n {2}"name":/);
   });
 });
