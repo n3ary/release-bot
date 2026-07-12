@@ -36,6 +36,7 @@ import {
   enableAutoMerge,
   findOpenReleasePR,
   openPullRequest,
+  updateReleaseBranchRef,
   type PullRequestResult,
 } from "./pr.ts";
 import type { Env, PackageJsonFile } from "./types.ts";
@@ -382,13 +383,16 @@ export async function discoverAndOpenPR(
   });
 
   // 9. Update the new branch's ref to point at the new commit.
-  await octokit.rest.git.updateRef({
+  //    See `updateReleaseBranchRef` in pr.ts for the `force: true`
+  //    rationale -- a previous release run can leave the branch
+  //    at a non-ancestor commit, and `force: false` would 422.
+  await updateReleaseBranchRef(
+    octokit,
     owner,
     repo,
-    ref: `heads/${branchName}`,
-    sha: newCommit.sha,
-    force: false,
-  });
+    branchName,
+    newCommit.sha,
+  );
   log(`Committed ${newCommit.sha} to ${branchName}`);
 
   // 10. Open the PR.

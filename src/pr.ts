@@ -112,6 +112,42 @@ export async function openPullRequest(
 }
 
 /**
+ * Update the release branch's ref to point at the bot's new
+ * release commit.
+ *
+ * Uses `force: true` so the bot can always complete a release
+ * run even when a previous run left a stale branch at a
+ * non-ancestor commit. The `createBranch` helper is idempotent
+ * (returns "exists" instead of erroring on 422), but the
+ * subsequent `updateRef` is NOT idempotent on its own -- a
+ * non-fast-forward with `force: false` would 422 and the bot
+ * would 500. See the 2026-07-12 n3ary/gtfs-adapters incident in
+ * commit.ts for the full chain of events.
+ *
+ * The bot is the sole writer of `release/calver-*` branches, so
+ * discarding a stale previous-run tip is safe. The semantic
+ * guarantee is: "the release branch always points at the bot's
+ * latest release commit".
+ *
+ * Exported for unit testing.
+ */
+export async function updateReleaseBranchRef(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  branchName: string,
+  newCommitSha: string,
+): Promise<void> {
+  await octokit.rest.git.updateRef({
+    owner,
+    repo,
+    ref: `heads/${branchName}`,
+    sha: newCommitSha,
+    force: true,
+  });
+}
+
+/**
  * Enable auto-merge on a pull request via the GraphQL API.
  * The PR's required status checks (if any) must pass before the
  * PR auto-merges. With 0 required reviews, auto-merge fires as
