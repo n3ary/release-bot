@@ -16,7 +16,11 @@
 import { Octokit } from "octokit";
 import { getInstallationToken } from "./auth.ts";
 import { discoverAndOpenPR } from "./commit.ts";
-import { isMergedPullRequestClose, verifyWebhookSignature } from "./webhook.ts";
+import {
+  isMergedIntoDefaultBranch,
+  isMergedPullRequestClose,
+  verifyWebhookSignature,
+} from "./webhook.ts";
 import type { Env, PullRequestEvent } from "./types.ts";
 
 export default {
@@ -67,6 +71,20 @@ async function handleWebhook(
 
   if (!isMergedPullRequestClose(event)) {
     log(`Ignoring pull_request action=${event.action} merged=${event.pull_request?.merged}`);
+    return new Response("ignored", { status: 200 });
+  }
+
+  // 1a. Non-default-branch guard: the bot is a main-only bumper.
+  //     Merges into feature / epic / release branches are user
+  //     workflow steps, not "release to production" events. See
+  //     isMergedIntoDefaultBranch for the rationale and the
+  //     2026-07-12 incident.
+  if (!isMergedIntoDefaultBranch(event)) {
+    log(
+      `Ignoring merge into non-default branch: ` +
+      `base=${event.pull_request.base.ref} ` +
+      `default=${event.repository.default_branch}`,
+    );
     return new Response("ignored", { status: 200 });
   }
 
