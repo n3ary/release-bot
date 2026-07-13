@@ -5,8 +5,9 @@
 // shared webhook secret, then dispatch on event type and action.
 //
 // The only event we care about is pull_request with action=closed
-// and merged=true AND base.ref == repository.default_branch.
-// Everything else gets a 200 OK with no work.
+// and merged=true AND base.ref == repository.default_branch AND
+// the PR author is NOT the bot itself. Everything else gets a
+// 200 OK with no work.
 
 import type { Env, PullRequestEvent } from "./types.ts";
 
@@ -70,4 +71,36 @@ export function isMergedPullRequestClose(event: PullRequestEvent): boolean {
  */
 export function isMergedIntoDefaultBranch(event: PullRequestEvent): boolean {
   return event.pull_request?.base?.ref === event.repository?.default_branch;
+}
+
+/**
+ * The bot's release PRs auto-merge to main within seconds of opening
+ * (the org has 0 required reviews on release PRs). Every time that
+ * merge lands, GitHub fires a `pull_request.closed` webhook back
+ * to this bot. Without this guard, the bot re-enters its bump
+ * loop on its own merge commit, sees the OTHER package.json as
+ * "version stale vs HEAD~1", bumps it, opens a new release PR,
+ * auto-merges, fires the webhook, bumps the first one, opens
+ * another, ad infinitum. One new release PR per ~50 seconds.
+ *
+ * Concrete incident: 2026-07-13, n3ary/gtfs-adapters. PR #108
+ * was the first bot-driven release; from 05:25Z to 05:54Z the
+ * bot opened 30 release PRs (#108 -> #137), re-published
+ * `@n3ary/gtfs-adapter-cluj-napoca` to GH Packages 26 times
+ * (v0.3.14 -> v0.3.39), and accumulated `_n3ary_release_bot_skip`
+ * markers in both `package.json` files. User noticed when the
+ * email notifications started flooding in.
+ *
+ * The fix is a single predicate: skip the event if the PR's
+ * author is the bot itself. The literal `[bot]` suffix is how
+ * GitHub tags all App-authored PRs (per the GitHub Apps spec);
+ * comparing the full slug avoids any false-positive from a
+ * human user named "n3ary-release-bot".
+ *
+ * Exported for unit testing. Regression test in
+ * test/webhook.test.ts pins the n3ary/gtfs-adapters PR #137
+ * shape (bot author + merged + main + closed).
+ */
+export function isBotAuthoredPR(event: PullRequestEvent): boolean {
+  return event.pull_request?.user?.login === "n3ary-release-bot[bot]";
 }
