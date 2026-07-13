@@ -17,6 +17,7 @@ import { Octokit } from "octokit";
 import { getInstallationToken } from "./auth.ts";
 import { discoverAndOpenPR } from "./commit.ts";
 import {
+  isBotAuthoredPR,
   isMergedIntoDefaultBranch,
   isMergedPullRequestClose,
   verifyWebhookSignature,
@@ -84,6 +85,24 @@ async function handleWebhook(
       `Ignoring merge into non-default branch: ` +
       `base=${event.pull_request.base.ref} ` +
       `default=${event.repository.default_branch}`,
+    );
+    return new Response("ignored", { status: 200 });
+  }
+
+  // 1b. Self-merge guard: the bot must not re-fire on its own
+  //     release PRs. Every release PR auto-merges to main (the
+  //     org has 0 required reviews); without this guard, the bot
+  //     reads its own merge commit, bumps the OTHER package.json,
+  //     opens another release PR, auto-merges, fires the webhook
+  //     again -- an infinite ping-pong alternating between the
+  //     two version files. 30 PRs in 28 minutes observed in
+  //     n3ary/gtfs-adapters 2026-07-13. See isBotAuthoredPR for
+  //     the full trace.
+  if (isBotAuthoredPR(event)) {
+    log(
+      `Ignoring merge of bot's own release PR: ` +
+      `pr=${event.pull_request.merge_commit_sha?.slice(0, 7)} ` +
+      `author=n3ary-release-bot[bot]`,
     );
     return new Response("ignored", { status: 200 });
   }

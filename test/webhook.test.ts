@@ -1,9 +1,12 @@
 // Tests for the webhook event predicates.
 //
-// The two predicates gate the bot's work:
+// The three predicates gate the bot's work:
 //   - isMergedPullRequestClose  -- "is this a closed+merged PR?"
 //   - isMergedIntoDefaultBranch -- "did the merge land on the
 //     repo's default branch (e.g. main)?"
+//   - isBotAuthoredPR           -- "did the bot open this PR
+//     itself?" (regression guard for the 2026-07-13
+//     n3ary/gtfs-adapters ping-pong loop)
 //
 // The second predicate is the regression guard for the
 // 2026-07-12 incident: n3ary/gtfs-adapters PR #78 was merged
@@ -11,12 +14,13 @@
 // only checked `merged === true`) fired and opened a release PR
 // against main carrying the entire feature-branch tree.
 //
-// Both predicates are pure functions over the event payload, so
-// the tests can construct minimal fixtures without spinning up a
-// Worker.
+// All three predicates are pure functions over the event payload,
+// so the tests can construct minimal fixtures without spinning
+// up a Worker.
 
 import { describe, expect, it } from "vitest";
 import {
+  isBotAuthoredPR,
   isMergedIntoDefaultBranch,
   isMergedPullRequestClose,
 } from "../src/webhook.ts";
@@ -183,5 +187,82 @@ describe("isMergedIntoDefaultBranch", () => {
     const event = makeEvent();
     (event as { pull_request: unknown }).pull_request = undefined;
     expect(isMergedIntoDefaultBranch(event)).toBe(false);
+  });
+});
+
+describe("isBotAuthoredPR", () => {
+  it("returns true when the PR author is the n3ary-release-bot app", () => {
+    // Regression for n3ary/gtfs-adapters 2026-07-13 ping-pong loop:
+    // the bot's own release PR auto-merged to main, fired a webhook,
+    // and the bot re-entered its bump loop. Pin this exact shape so
+    // the guard cannot regress silently.
+    expect(
+      isBotAuthoredPR(
+        makeEvent({
+          pull_request: {
+            merged: true,
+            merge_commit_sha: "1e193615aac1bb8c3a64c5cb2c1f2b1bf4a5e1b4",
+            head: { sha: "h" },
+            base: { ref: "main", sha: "b" },
+            user: { login: "n3ary-release-bot[bot]" },
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false for a human-authored merged PR", () => {
+    // The default makeEvent fixture has no `user` field. With the
+    // recent types change making `user` optional, the predicate
+    // must return false in that case (defensive default) so
+    // older events from before the field existed don't accidentally
+    // match and silence the bot.
+    expect(isBotAuthoredPR(makeEvent())).toBe(false);
+
+    // An explicit human login is also fine.
+    expect(
+      isBotAuthoredPR(
+        makeEvent({
+          pull_request: {
+            merged: true,
+            merge_commit_sha: "x",
+            head: { sha: "h" },
+            base: { ref: "main", sha: "b" },
+            user: { login: "ciotlosm" },
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for a human user with a similar name (no [bot] suffix)", () => {
+    // The literal `[bot]` suffix is what GitHub adds to App
+    // authors. A human whose login is "n3ary-release-bot" (no
+    // suffix) must NOT match -- the predicate is exact-string
+    // comparison on the full slug.
+    expect(
+      isBotAuthoredPR(
+        makeEvent({
+          pull_request: {
+            merged: true,
+            merge_commit_sha: "x",
+            head: { sha: "h" },
+            base: { ref: "main", sha: "b" },
+            user: { login: "n3ary-release-bot" },
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when the event has no pull_request (defensive)", () => {
+    // Same defensive default as the other predicates. The
+    // optional-chaining on `?.user?.login` returns undefined
+    // for a missing user, undefined for a missing pull_request,
+    // and the strict-equal against "n3ary-release-bot[bot]" is
+    // false in both cases.
+    const event = makeEvent();
+    (event as { pull_request: unknown }).pull_request = undefined;
+    expect(isBotAuthoredPR(event)).toBe(false);
   });
 });

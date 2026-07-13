@@ -28,6 +28,14 @@ export interface PullRequestEvent {
   pull_request: {
     merged: boolean;
     merge_commit_sha: string | null;
+    // The PR author's login. Used by `isBotAuthoredPR` to filter
+    // out the bot's own release PRs (otherwise the bot feeds
+    // itself forever: every release PR auto-merges to main, the
+    // webhook fires again, the bot opens another release PR, ad
+    // infinitum). Optional so older fixtures and edge payloads
+    // (e.g. events from before the field existed) don't break
+    // the type.
+    user?: { login: string };
     head: { sha: string };
     base: { ref: string; sha: string };
   };
