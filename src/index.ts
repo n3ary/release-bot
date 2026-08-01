@@ -125,16 +125,27 @@ async function handleWebhook(
     `Processing merge: ${owner}/${repo}@${mergeSha} (branch: ${defaultBranch})`,
   );
 
-  // 2a. Self-bump guard: skip the bot's own repo. The bot's
-  //     version is semver, not CalVer; auto-bumping it would
-  //     silently overwrite the manual version (e.g. "0.2.1" ->
-  //     "26.7.11-2"). The user closes the resulting release PR
-  //     every time, so the right answer is to skip the repo
-  //     entirely.
-  if (owner.toLowerCase() === "n3ary" && repo.toLowerCase() === "release-bot") {
-    log("Skipping self-bump: this is the release bot's own repo");
-    return new Response("skipped (self)", { status: 200 });
-  }
+  // 2a. Self-bump: the bot handles its own repo too. The version
+  //     scheme is picked per-file in commit.ts via `bumpSchemeFor`,
+  //     which inspects the current `version` shape. The release-bot
+  //     is `private: true` but on semver (`0.3.0` etc.), so the
+  //     scheme is `"semver"` here. The CalVer 7 downstream repos
+  //     are also `private: true` but on CalVer (`26.7.24-1`), so
+  //     their scheme is `"calver"`. One unified system, two
+  //     version spaces, picked by the actual current version.
+  //
+  //     No infinite-loop risk: the `isBotAuthoredPR` guard in the
+  //     webhook filter (see src/webhook.ts) prevents the bot from
+  //     acting on its own release PR — it only sees the *next*
+  //     human-authored merge that lands on main.
+  //
+  //     Previously this was a hard skip; release-please handled
+  //     this repo instead. release-please depended on
+  //     `can_approve_pull_request_reviews` at the org level, which
+  //     is OFF for n3ary, so the first real run on 2026-08-01
+  //     failed with "GitHub Actions is not permitted to create or
+  //     approve pull requests". Retiring release-please in favor
+  //     of self-bump is the durable fix.
 
   // 3. Get an installation access token. Exchange the app's JWT.
   let token: string;
