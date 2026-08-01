@@ -37,7 +37,7 @@
 
 import { Octokit } from "octokit";
 import { DateTime } from "luxon";
-import { nextCalVer, nextSemVer } from "./bump.ts";
+import { nextCalVer, nextSemVer, parseCalVer, parseSemVer } from "./bump.ts";
 import {
   createBranch,
   enableAutoMerge,
@@ -154,12 +154,42 @@ export function isPrivatePackage(content: string): boolean {
 }
 
 /**
- * Which bump scheme applies to a given package? Returns
- * `"calver"` for apps (private: true) and `"semver"` for
- * libraries (the default). Used to pick between nextCalVer and
- * nextSemVer in the bump loop.
+ * Which bump scheme applies to a given package? Returns `"calver"`
+ * for CalVer-versioned apps and `"semver"` for semver-versioned
+ * libraries. Used to pick between nextCalVer and nextSemVer in the
+ * bump loop.
+ *
+ * Heuristic, in order of precedence:
+ *   1. If the current `version` is semver-shaped (e.g. `0.3.0`),
+ *      use `"semver"`. Disambiguates the release-bot itself,
+ *      which is `private: true` (it's an internal app, not
+ *      published to npm) but uses semver for its own version.
+ *   2. If the current `version` is CalVer-shaped (e.g.
+ *      `26.7.24-1`), use `"calver"`. This is the typical app.
+ *   3. Fall back to the `private` field: `"calver"` for private
+ *      packages (apps), `"semver"` for libraries.
+ *
+ * The version-shape check wins over `private` because `private: true`
+ * is not a versioning signal — it's a publish-suppression signal.
+ * The release-bot is private but semver, and the 7 downstream
+ * apps are private but CalVer, so the `private` field alone is
+ * ambiguous. The actual current version is the source of truth.
  */
 export function bumpSchemeFor(content: string): "calver" | "semver" {
+  const versionMatch = content.match(/"version"\s*:\s*"([^"]+)"/);
+  if (versionMatch) {
+    const v = versionMatch[1];
+    // CalVer must win over semver because `26.7.18-3` is
+    // ambiguous: it parses as CalVer (year=26, month=7, day=18,
+    // counter=3) AND as semver (major=26, minor=7, patch=18,
+    // prerelease=3). The release-bot's downstream apps are
+    // on this exact shape. Check CalVer first so the apps
+    // stay on CalVer; a library that wants to leave CalVer
+    // for semver has to set a clean MAJOR.MINOR.PATCH (no
+    // prerelease, no counter), which the CalVer regex rejects.
+    if (parseCalVer(v) !== null) return "calver";
+    if (parseSemVer(v) !== null) return "semver";
+  }
   return isPrivatePackage(content) ? "calver" : "semver";
 }
 

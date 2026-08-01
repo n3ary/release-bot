@@ -247,7 +247,9 @@ describe("isPrivatePackage", () => {
 });
 
 describe("bumpSchemeFor", () => {
-  it("returns calver for private packages", () => {
+  it("returns calver for private packages (no version field)", () => {
+    // No `version` field, so the version-shape heuristic is
+    // a no-op and we fall back to the `private` heuristic.
     expect(bumpSchemeFor('{"private": true, "name": "x"}')).toBe("calver");
   });
 
@@ -256,6 +258,63 @@ describe("bumpSchemeFor", () => {
       .toBe("semver");
     expect(bumpSchemeFor('{"private": false, "name": "x"}'))
       .toBe("semver");
+  });
+
+  // The version-shape heuristic: the current `version` is the
+  // source of truth. The `private` field is only a publish
+  // signal, not a versioning signal -- the release-bot is
+  // `private: true` (internal tool, not on npm) but on semver
+  // (`0.3.0`), and the 7 downstream apps are `private: true`
+  // but on CalVer (`26.7.24-1`).
+  it("returns semver when private but version is semver-shaped (release-bot)", () => {
+    expect(
+      bumpSchemeFor(
+        '{"name": "n3ary-release-bot", "private": true, "version": "0.3.0"}',
+      ),
+    ).toBe("semver");
+    expect(
+      bumpSchemeFor(
+        '{"name": "n3ary-release-bot", "private": true, "version": "1.2.3-rc.1"}',
+      ),
+    ).toBe("semver");
+  });
+
+  it("returns calver when private and version is calver-shaped (downstream apps)", () => {
+    expect(
+      bumpSchemeFor(
+        '{"name": "neary-app", "private": true, "version": "26.7.24-1"}',
+      ),
+    ).toBe("calver");
+  });
+
+  it("returns calver for private libraries whose version is calver-shaped", () => {
+    // Once a library transitions from calver to semver, the
+    // version-shape heuristic picks it up automatically. Until
+    // then, even an "internal" package on calver stays on calver.
+    expect(
+      bumpSchemeFor(
+        '{"name": "neary-gtfs", "private": true, "version": "26.7.18-3"}',
+      ),
+    ).toBe("calver");
+  });
+
+  it("returns semver for non-private libraries on semver", () => {
+    expect(
+      bumpSchemeFor(
+        '{"name": "@n3ary/gtfs-spec", "private": false, "version": "0.7.0"}',
+      ),
+    ).toBe("semver");
+  });
+
+  it("falls back to the private heuristic when the version is unparseable", () => {
+    // Garbage version: version-shape heuristic can't decide.
+    // Falls back to the `private` field.
+    expect(
+      bumpSchemeFor('{"private": true, "name": "x", "version": "garbage"}'),
+    ).toBe("calver");
+    expect(
+      bumpSchemeFor('{"private": false, "name": "x", "version": "garbage"}'),
+    ).toBe("semver");
   });
 });
 
