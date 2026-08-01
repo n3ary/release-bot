@@ -13,3 +13,12 @@ allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+
+# Force a patched sharp across the dep tree. sharp<0.35.0 (Dependabot
+# alert #1) bundles libvips with multiple High CVSSv4 advisories.
+# sharp is pulled in transitively via wrangler -> miniflare; the
+# release-bot runtime doesn't touch it directly. Bump to ^0.35.0
+# until wrangler raises its own floor; drop the override once the
+# wrangler range admits a patched sharp.
+overrides:
+  sharp: ^0.35.0
