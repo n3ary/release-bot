@@ -14,11 +14,39 @@ allowBuilds:
   sharp: true
   workerd: true
 
-# Force a patched sharp across the dep tree. sharp<0.35.0 (Dependabot
-# alert #1) bundles libvips with multiple High CVSSv4 advisories.
-# sharp is pulled in transitively via wrangler -> miniflare; the
-# release-bot runtime doesn't touch it directly. Bump to ^0.35.0
-# until wrangler raises its own floor; drop the override once the
-# wrangler range admits a patched sharp.
+# Force a patched sharp across the dep tree. sharp<0.35.4 (Dependabot
+# alerts #1 and #13) bundles libvips with multiple High CVSSv4
+# advisories, plus the libheif pair GHSA-g89c-p67h-r497 and
+# GHSA-2jg2-4ch7-h545. sharp is pulled in transitively via
+# wrangler -> miniflare; the release-bot runtime doesn't touch it
+# directly. miniflare pins sharp to an exact version, so the override
+# is the only thing that moves it. Bump to ^0.35.4 until wrangler
+# raises its own floor; drop the override once the wrangler range
+# admits a patched sharp.
+#
+# undici <7.29.1 (Dependabot alerts #3, #4 and #5) is vulnerable to
+# CRLF injection via a blob-like body type, cookie attribute injection
+# via an unsanitized domain, and downstream response desynchronization
+# via the retry interceptor. Also pulled in transitively via wrangler ->
+# miniflare, which pins an exact version.
+#
+# postcss <=8.5.22 (alerts #2 and #8) has a path traversal in
+# sourceMappingURL auto-loading that discloses arbitrary .map files.
+# Pulled in transitively via vite.
+#
+# source-map-js <1.2.2 (alert #14) allows an event-loop DoS through
+# indexed source-map section offsets. Pulled in transitively via
+# postcss.
+#
+# nanoid <3.3.18 lets custom generators loop indefinitely when size is
+# zero. Pulled in transitively via postcss.
+#
+# vite is declared directly in package.json: it reaches the tree only
+# as vitest's auto-installed peer, and pnpm's overrides do not apply
+# to auto-installed peers.
 overrides:
-  sharp: ^0.35.0
+  sharp: ^0.35.4
+  undici: ^7.29.1
+  postcss: ^8.5.23
+  source-map-js: ^1.2.2
+  nanoid: ^3.3.18
